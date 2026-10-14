@@ -106,6 +106,14 @@ def test_native_mic_requires_desktop_mode(client, monkeypatch):
     assert client.post("/api/voice/listen", json={"language": "kk-KZ"}).json()["text"] == "Музыка қос: Moldanazar"
 
 
+def test_mic_status_requires_desktop_mode(client, monkeypatch):
+    monkeypatch.delenv("AYAN_DESKTOP_MODE", raising=False)
+    assert client.get("/api/voice/status").status_code == 409
+    monkeypatch.setenv("AYAN_DESKTOP_MODE", "1")
+    monkeypatch.setattr("app.voice.get_status", lambda: {"phase": "calibrating"})
+    assert client.get("/api/voice/status").json() == {"phase": "calibrating"}
+
+
 def test_youtube_url_route_works_without_search_access(client):
     response = client.get("/api/music/search", params={"q": "https://youtu.be/dQw4w9WgXcQ"})
     assert response.status_code == 200

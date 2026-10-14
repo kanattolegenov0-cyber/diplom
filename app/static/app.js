@@ -163,10 +163,11 @@
       };
       state.recognition = recognition;
     }
+    if (state.nativeListening) return;
     const native = Boolean(state.health?.desktop_mode && state.health?.native_voice_available);
     $('#mic-button').disabled = !native && !state.recognition;
     if (native) {
-      $('#voice-notice').textContent = 'Микрофонды басып, пәрмен айтыңыз. Дауыс тану үшін интернет керек; фондық тыңдау жоқ.';
+      $('#voice-notice').textContent = 'Микрофонды басып, «Айтыңыз» деген белгі шыққаннан кейін сөйлеңіз. Дауыс тану үшін интернет керек; фондық тыңдау жоқ.';
     } else if (state.recognition) {
       $('#voice-notice').textContent = 'Дауыс тану Chrome/Edge және HTTPS/localhost-та қолжетімді. Тек микрофонды басқан кезде тыңдаймын.';
     } else {
@@ -184,16 +185,60 @@
     if ('speechSynthesis' in window) speechSynthesis.cancel();
     if (state.health?.desktop_mode && state.health?.native_voice_available) {
       state.nativeListening = true;
-      setListening(true);
+      setListening(false);
+      setAssistantState('Микрофон дайындалуда…');
+      $('#voice-notice').textContent = 'Микрофон дайындалуда. «Айтыңыз» белгісі шыққанша үнсіз күтіңіз.';
       $('#mic-button').disabled = true;
-      $('#mic-button').setAttribute('aria-label', 'Дауыстық пәрменді тыңдап тұрмын');
+      $('#mic-button').setAttribute('aria-label', 'Микрофон дайындалуда');
+      let pollingActive = true;
+      let pollTimer;
+      let pollTimeout;
+      let pollController;
+      const stopPolling = () => {
+        pollingActive = false;
+        clearTimeout(pollTimer);
+        clearTimeout(pollTimeout);
+        pollController?.abort();
+      };
+      const pollVoiceStatus = async () => {
+        if (!pollingActive) return;
+        pollController = new AbortController();
+        pollTimeout = setTimeout(() => pollController.abort(), 5000);
+        try {
+          const response = await fetch('/api/voice/status', { signal: pollController.signal });
+          if (response.ok) {
+            const status = await response.json();
+            if (!pollingActive) return;
+            const phases = {
+              calibrating: '1 секунд үнсіз күтіңіз…',
+              listening: 'Айтыңыз, тыңдап тұрмын…',
+              recognizing: 'Дауыс қабылданды, мәтінге айналдырып жатырмын…',
+            };
+            const description = phases[status.phase];
+            if (description) {
+              setListening(status.phase === 'listening');
+              setAssistantState(description);
+              $('#voice-notice').textContent = description;
+              $('#mic-button').setAttribute('aria-label', description);
+            }
+          }
+        } catch { /* Readiness comes only from a successful status response. */ }
+        finally {
+          clearTimeout(pollTimeout);
+          if (pollingActive) pollTimer = setTimeout(pollVoiceStatus, 250);
+        }
+      };
       try {
-        const result = await post('/api/voice/listen', { language: state.language }, { timeout: 35000 });
+        const listenRequest = post('/api/voice/listen', { language: state.language }, { timeout: 45000 });
+        pollVoiceStatus();
+        const result = await listenRequest;
+        stopPolling();
+        setListening(false);
         const text = String(result.text || '').trim();
         if (text) { $('#command-input').value = text; await handleCommand(text); }
         else toast('Пәрмен анық естілмеді. Қайта айтыңыз немесе мәтінмен жазыңыз.', true);
       } catch (error) { toast(error.message, true); }
-      finally { state.nativeListening = false; $('#mic-button').disabled = false; setListening(false); }
+      finally { stopPolling(); state.nativeListening = false; setListening(false); configureVoice(); }
       return;
     }
     if (!state.recognition) return;

@@ -153,6 +153,12 @@ def create_app(data_dir: Path | None = None, browser=None, music=None) -> FastAP
         except voice.VoiceError as exc:
             raise HTTPException(503, str(exc)) from exc
 
+    @application.get("/api/voice/status")
+    async def voice_status():
+        if os.environ.get("AYAN_DESKTOP_MODE") != "1":
+            raise HTTPException(409, "Микрофон күйі тек desktop режимінде қолжетімді.")
+        return voice.get_status()
+
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
     static = bundle_root / "app" / "static"
 

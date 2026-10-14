@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#111413">
+  <meta name="description" content="Аян — музыка, браузер, күнделік және еске салғыштарға арналған жеке көмекші.">
+  <title>AYAN — жеке көмекшіңіз</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <svg class="icon-definitions" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></symbol>
+    <symbol id="i-music" viewBox="0 0 24 24"><path d="M9 18V5l12-2v13M9 9l12-2"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="16" rx="3" ry="3"/></symbol>
+    <symbol id="i-browser" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01M8 14l3 3 5-5"/></symbol>
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M4 4h7l1 2 1-2h7v16h-7l-1 1-1-1H4ZM12 6v15M7 8h2M7 12h2M15 8h2M15 12h2"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="M7 17 17 7M7 7h10v10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24"><path d="m11 4-6 5H2v6h3l6 5ZM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7Z"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5m6-6-6 6 6 6"/></symbol>
+    <symbol id="i-spark" viewBox="0 0 24 24"><path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5Z"/></symbol>
+    <symbol id="i-headphones" viewBox="0 0 24 24"><path d="M3 14v-3a9 9 0 0 1 18 0v3M3 12h4v9H5a2 2 0 0 1-2-2ZM21 12h-4v9h2a2 2 0 0 0 2-2Z"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+  </defs></svg>
+
+  <a class="skip-link" href="#command-input">Пәрменге өту</a>
+  <aside class="sidebar" id="sidebar">
+    <a href="#home" class="brand" aria-label="Аян, басты бет"><span class="brand-mark"><span></span><span></span><span></span><span></span></span><span>ayan<span class="brand-period">.</span></span></a>
+    <div class="sidebar-label">ЖЕКЕ КӨМЕКШІҢІЗ</div>
+    <nav class="navigation" aria-label="Негізгі навигация">
+      <button class="nav-item active" data-view="home" aria-current="page"><svg class="icon"><use href="#i-home"/></svg><span>Басты бет</span><span class="nav-dot"></span></button>
+      <button class="nav-item" data-view="music"><svg class="icon"><use href="#i-music"/></svg><span>Музыка</span></button>
+      <button class="nav-item" data-view="browser"><svg class="icon"><use href="#i-browser"/></svg><span>Браузер</span></button>
+      <button class="nav-item" data-view="diary"><svg class="icon"><use href="#i-book"/></svg><span>Күнделік</span><span class="nav-count" id="diary-count">0</span></button>
+      <button class="nav-item" data-view="reminders"><svg class="icon"><use href="#i-bell"/></svg><span>Еске салғыштар</span></button>
+    </nav>
+    <div class="sidebar-tip"><span class="tip-icon"><svg class="icon"><use href="#i-spark"/></svg></span><h3>Ойыңызды айтыңыз</h3><p>Ән қосу, жазба сақтау немесе сайт ашу — бір пәрменмен.</p><button class="text-button" id="help-button">Не істей аласың? <svg class="icon"><use href="#i-arrow"/></svg></button></div>
+    <div class="sidebar-footer"><span class="avatar">A</span><div><strong>Жеке кеңістігіңіз</strong><small id="platform-label">AYAN assistant · v1.0</small></div><span class="small-online" aria-label="Қосылу күйі" id="sidebar-online"></span></div>
+  </aside>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="breadcrumb"><button class="icon-button mobile-menu" id="menu-toggle" aria-label="Мәзірді ашу" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button><span>Кеңістік</span><span class="breadcrumb-divider">/</span><strong id="page-name">Басты бет</strong></div>
+      <div class="topbar-right"><time id="today"></time><span class="connection-pill" id="connection-status"><span></span>Қосылуда</span></div>
+    </header>
+    <main id="main-content" data-view="home">
+      <section class="hero" data-page="home" aria-labelledby="hero-title">
+        <div class="hero-copy"><div class="eyebrow"><span></span> СӘЛЕМ, МЕН АЯН</div><h1 id="hero-title">Күніңізді жеңілдететін<br><span>бір дауыс.</span></h1><p>Сүйікті әуеніңіз, ойларыңыз, күнделікті істеріңіз.<br>Барлығы — өзіңізге ыңғайлы бір кеңістікте.</p><div class="hero-note"><span class="hero-note-icon"><svg class="icon"><use href="#i-mic"/></svg></span><span>Микрофонды басып, не керек екенін айтыңыз.</span></div></div>
+        <div class="orb-scene" aria-hidden="true"><div class="orb-orbit orbit-one"></div><div class="orb-orbit orbit-two"></div><div class="orb-glow"></div><div class="assistant-orb"><div class="orb-inner"></div><div class="orb-sheen"></div></div><div class="floating-tag tag-music"><svg class="icon"><use href="#i-music"/></svg>Көңіл күйге сай әуен</div><div class="floating-tag tag-spark"><svg class="icon"><use href="#i-spark"/></svg>Ойдан — әрекетке</div><div class="orb-caption"><span></span><span id="assistant-state">Пәрменіңізді күтіп тұрмын</span></div></div>
+      </section>
+
+      <section class="command-card" aria-label="Көмекшімен сөйлесу">
+        <div class="command-topline"><div class="command-label"><svg class="icon"><use href="#i-spark"/></svg><span>Аянға айтыңыз</span></div><div class="voice-settings"><label class="sr-only" for="voice-language">Дауыс тілі</label><select id="voice-language" aria-label="Дауыс тілі"><option value="kk-KZ">Қазақша</option><option value="ru-RU">Русский</option></select><button class="speech-toggle" id="speech-toggle" aria-pressed="true" title="Көмекшінің жауабын дауыстау"><svg class="icon"><use href="#i-volume"/></svg><span>Дауыс қосулы</span></button></div></div>
+        <div class="conversation" id="conversation" aria-label="Сөйлесу тарихы" aria-live="polite"></div>
+        <form id="command-form" class="command-form"><button class="mic-button" type="button" id="mic-button" aria-label="Дауыстық пәрмен беру" aria-pressed="false"><svg class="icon"><use href="#i-mic"/></svg></button><label class="sr-only" for="command-input">Пәрмен</label><input id="command-input" type="text" placeholder="Мысалы, «Moldanazar музыкасын қос»" autocomplete="off" maxlength="4000"><button class="send-button" type="submit" aria-label="Пәрменді жіберу"><svg class="icon"><use href="#i-arrow"/></svg></button></form>
+        <div class="command-examples"><span>Бастап көріңіз:</span><button data-command="Музыка қос: Moldanazar"><svg class="icon"><use href="#i-music"/></svg>Музыка қос</button><button data-command="https://wikipedia.org аш"><svg class="icon"><use href="#i-browser"/></svg>Сайт аш</button><button data-command="Күнделікке жаз: Бүгінгі мақсатым — жаңа нәрсе үйрену"><svg class="icon"><use href="#i-book"/></svg>Ойымды сақта</button><button data-command="10 минуттан кейін су ішуді еске сал"><svg class="icon"><use href="#i-bell"/></svg>Еске сал</button></div>
+        <p id="voice-notice" class="capability-note">Дауыстық пәрменді тек микрофонды басқан кезде тыңдаймын.</p>
+      </section>
+
+      <div class="workspace-heading" data-page="home"><div><span class="eyebrow small">БӘРІ ҚОЛ АСТЫҢЫЗДА</span><h2>Сіздің кеңістігіңіз</h2></div><span class="workspace-hint">Күнделікті істер, бір жерде.</span></div>
+      <div class="workspace-grid">
+        <section class="tool-card music-card" data-page="home music" aria-labelledby="music-heading">
+          <div class="card-heading"><div class="card-title"><span class="section-icon lime"><svg class="icon"><use href="#i-headphones"/></svg></span><div><h2 id="music-heading">Сіздің әуеніңіз</h2><p>Көңіл күйіңізге сай музыка</p></div></div><span class="source-badge"><span class="youtube-mark">▶</span> YouTube</span></div>
+          <form class="search-form" id="music-search-form"><svg class="icon"><use href="#i-search"/></svg><label class="sr-only" for="music-query">Ән немесе орындаушы</label><input id="music-query" placeholder="Әнді немесе орындаушыны іздеу" maxlength="300" required><button type="submit">Іздеу</button></form>
+          <div class="player-stage" id="player-stage"><div class="music-art" id="music-placeholder"><div class="art-orbit"></div><div class="art-disc"><div></div></div><span class="art-label">YOUR DAILY SOUNDTRACK</span><div class="art-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div id="youtube-player"></div></div>
+          <div class="track-meta"><div><h3 id="track-title">Күніңіздің саундтрегін таңдаңыз</h3><p id="track-channel">Сүйікті әніңізді іздеп бастаңыз</p></div><button class="player-play" id="play-toggle" aria-label="Музыканы ойнату" disabled><svg class="icon"><use href="#i-play"/></svg></button></div>
+          <div class="player-bottom"><div class="volume-control"><svg class="icon"><use href="#i-volume"/></svg><label class="sr-only" for="volume-slider">Дыбыс деңгейі</label><input id="volume-slider" type="range" min="0" max="100" value="60"><span id="volume-value">60%</span></div><a id="youtube-link" href="https://www.youtube.com" target="_blank" rel="noopener noreferrer">YouTube-та ашу <svg class="icon"><use href="#i-arrow-up"/></svg></a></div>
+          <p class="capability-note" id="music-notice">Кейбір бейнелер үшін ойнату батырмасын басу қажет.</p><div id="music-results" class="music-results" aria-live="polite"></div>
+        </section>
+
+        <section class="tool-card diary-card" data-page="home diary" aria-labelledby="diary-heading">
+          <div class="card-heading"><div class="card-title"><span class="section-icon purple"><svg class="icon"><use href="#i-book"/></svg></span><div><h2 id="diary-heading">Ойға орын бар</h2><p>Кішкентай сәттер. Үлкен ойлар.</p></div></div><span class="subtle-badge" id="diary-total">0 жазба</span></div>
+          <form id="diary-form" class="diary-form"><label class="sr-only" for="diary-content">Жаңа күнделік жазбасы</label><textarea id="diary-content" placeholder="Бүгін ойыңызда не бар?" rows="3" maxlength="10000" required></textarea><div class="diary-form-footer"><span>Өзіңіз үшін сақтаңыз.</span><button class="small-primary" type="submit"><svg class="icon"><use href="#i-plus"/></svg>Жазба қосу</button></div></form>
+          <div class="list-heading"><span>СОҢҒЫ ЖАЗБАЛАР</span><svg class="icon"><use href="#i-book"/></svg></div><div id="diary-entries" class="diary-entries" aria-live="polite"><div class="empty-state"><span class="empty-symbol">✦</span><h3>Әр күннің өз оқиғасы бар</h3><p>Алғашқы ойыңызды осы жерге сақтаңыз.</p></div></div>
+        </section>
+
+        <section class="tool-card browser-card" data-page="browser" aria-labelledby="browser-heading">
+          <div class="card-heading"><div class="card-title"><span class="section-icon blue"><svg class="icon"><use href="#i-browser"/></svg></span><div><h2 id="browser-heading">Сайттарды бірге зерттейік</h2><p>Бетті ашыңыз, мәтін енгізіңіз, әрекет орындаңыз.</p></div></div><span class="subtle-badge" id="browser-status">Жеке браузер</span></div>
+          <form class="search-form browser-url-form" id="browser-open-form"><svg class="icon"><use href="#i-browser"/></svg><label class="sr-only" for="browser-url">Сайт мекенжайы</label><input id="browser-url" placeholder="https://example.com" type="text" maxlength="2048" required><button type="submit">Ашу <svg class="icon"><use href="#i-arrow-up"/></svg></button></form>
+          <div class="browser-window"><div class="browser-chrome"><span class="window-dots"><i></i><i></i><i></i></span><span id="browser-title">Жаңа бет</span><button class="icon-button" id="browser-back" aria-label="Алдыңғы бетке оралу"><svg class="icon"><use href="#i-back"/></svg></button></div><div class="browser-preview" id="browser-preview"><div class="empty-state browser-empty"><span class="section-icon blue"><svg class="icon"><use href="#i-browser"/></svg></span><h3>Бірінші аялдама қайда?</h3><p>Сайт мекенжайын енгізіңіз.<br>Аян ашылған беттің суретін көрсетеді.</p></div><img id="browser-screenshot" alt="Браузерде ашылған беттің скриншоты" hidden></div></div>
+          <form id="browser-action-form" class="browser-action-form"><div class="field"><label for="browser-action">Әрекет</label><select id="browser-action"><option value="fill">Мәтін енгізу</option><option value="click">Элементті басу</option><option value="scroll">Бетті айналдыру</option></select></div><div class="field target-field"><label for="browser-target">Өріс немесе батырма атауы</label><input id="browser-target" placeholder="Мысалы, Іздеу" maxlength="500"></div><div class="field value-field"><label for="browser-value">Мәтін</label><input id="browser-value" placeholder="Не енгізу керек?" maxlength="4000"></div><div class="field direction-field" hidden><label for="browser-direction">Бағыт</label><select id="browser-direction"><option value="down">Төмен</option><option value="up">Жоғары</option></select></div><button class="small-primary" type="submit">Орындау <svg class="icon"><use href="#i-arrow"/></svg></button></form>
+          <p class="capability-note" id="browser-notice">Бұл — Аян басқаратын бөлек браузердің суреті. Суреттің өзін басу әрекет орындамайды. Батырманы басу пәрмені растауды сұрайды.</p>
+        </section>
+
+        <section class="tool-card reminders-card" data-page="home reminders" aria-labelledby="reminders-heading">
+          <div class="card-heading"><div class="card-title"><span class="section-icon peach"><svg class="icon"><use href="#i-bell"/></svg></span><div><h2 id="reminders-heading">Маңыздысын ұмытпаңыз</h2><p>Қажет сәтте есіңізге саламын.</p></div></div><span class="subtle-badge" id="reminder-total">0 белсенді</span></div>
+          <form id="reminder-form" class="reminder-form"><div class="field"><label for="reminder-title">Нені еске салайын?</label><input id="reminder-title" placeholder="Мысалы, су ішу" maxlength="300" required></div><div class="field"><label for="reminder-delay">Қанша минуттан кейін?</label><input id="reminder-delay" type="number" min="1" max="43200" value="10" required></div><button class="small-primary" type="submit"><svg class="icon"><use href="#i-plus"/></svg>Қосу</button></form><div id="reminder-list" class="reminder-list" aria-live="polite"></div><p class="capability-note">Еске салу осы терезе ашық болғанда көрсетіледі. Оны ашық қалдырыңыз.</p>
+        </section>
+      </div>
+      <footer class="main-footer"><span><span class="footer-dot"></span>Күнделікті істерге, өз тіліңізде.</span><span>AYAN · Жеке цифрлық көмекші</span></footer>
+    </main>
+  </div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
+  <dialog id="action-dialog" aria-labelledby="dialog-title" aria-describedby="dialog-description"><form method="dialog"><span class="section-icon peach"><svg class="icon"><use href="#i-browser"/></svg></span><h2 id="dialog-title">Әрекетті растайсыз ба?</h2><p id="dialog-description"></p><p class="dialog-note">Батырма сайтқа дерек жіберуі немесе басқа әрекет орындауы мүмкін.</p><div class="dialog-actions"><button value="cancel" class="secondary-button">Бас тарту</button><button value="confirm" class="small-primary">Иә, басу</button></div></form></dialog>
+</body>
+</html>

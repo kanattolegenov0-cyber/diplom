@@ -1,0 +1,4 @@
+-r requirements.txt
+pywebview==6.2.1; sys_platform == 'win32'
+SpeechRecognition[audio]==3.17.0; sys_platform == 'win32'
+pyinstaller==6.16.0; sys_platform == 'win32'

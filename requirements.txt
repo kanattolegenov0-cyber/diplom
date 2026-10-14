@@ -1,0 +1,5 @@
+fastapi==0.143.1
+uvicorn==0.34.0
+playwright==1.64.0
+yt-dlp==2026.8.19
+SpeechRecognition==3.17.0

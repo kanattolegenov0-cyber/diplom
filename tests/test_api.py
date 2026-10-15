@@ -148,3 +148,67 @@ async def test_search_failure_is_actionable(monkeypatch):
     monkeypatch.setattr(service, "_search", failing)
     with pytest.raises(MusicError, match="сілтемесін"):
         await service.search("song")
+
+
+def test_bare_song_title_search_without_model_key(client, monkeypatch):
+    monkeypatch.delenv("AYAN_LLM_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    result = client.post("/api/command", json={"text": "Moldanazar Ақпен бірге"}).json()
+    assert result["intent"] == "music_search"
+    assert result["payload"]["query"] == "Moldanazar Ақпен бірге"
+
+
+def test_settings_keys_are_write_only_and_private_to_loopback(client):
+    saved = client.post("/api/settings", json={"llm_api_key": "fake-key-for-api-tests", "tts_voice": "kk-KZ-AigulNeural"})
+    assert saved.status_code == 200 and saved.json()["llm_configured"]
+    assert "fake-key-for-api-tests" not in saved.text
+    assert "fake-key-for-api-tests" not in client.get("/api/settings").text
+    response = client.post("/api/settings", headers={"Origin": "https://other.example"}, json={"llm_api_key": "fake-key-for-api-tests"})
+    assert response.status_code == 403
+
+
+def test_settings_validation_never_echoes_credentials(client):
+    response = client.post("/api/settings", json={"llm_api_key": "fake-key-for-api-tests", "tts_provider": "bad-provider"})
+    assert response.status_code == 422
+    assert "fake-key-for-api-tests" not in response.text
+
+
+def test_plan_actions_are_validated_and_execute_only_after_request(client):
+    assert client.post("/api/assistant/action", json={"intent": "diary_add", "payload": {"content": "Модель тапсырмасы"}}).status_code == 200
+    assert client.get("/api/diary").json()["entries"][0]["content"] == "Модель тапсырмасы"
+    assert client.post("/api/assistant/action", json={"intent": "browser_action", "payload": {"action": "click", "target": "Send"}}).status_code == 422
+    assert client.post("/api/assistant/action", json={"intent": "reminder_add", "payload": {"title": "x", "delay_seconds": -5}}).status_code == 422
+
+
+def test_speech_response_has_audio_mime_and_error_is_actionable(tmp_path):
+    from app.speech import SpeechError
+
+    class SpeechDouble:
+        async def synthesize(self, text, language):
+            if text == "error":
+                raise SpeechError("Дауыс сервисіне қосылу мүмкін болмады.")
+            return b"ID3-test-audio"
+
+    with TestClient(create_app(tmp_path, browser=FakeBrowser(), speech=SpeechDouble())) as client:
+        response = client.post("/api/speech", json={"text": "Қазақша жауап", "language": "kk-KZ"})
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "audio/mpeg"
+        assert response.headers["cache-control"] == "no-store"
+        assert response.content == b"ID3-test-audio"
+        response = client.post("/api/speech", json={"text": "error"})
+        assert response.status_code == 502 and "Дауыс сервисіне" in response.json()["detail"]
+
+
+def test_model_plan_is_not_executed_by_command_endpoint(tmp_path):
+    class AssistantDouble:
+        async def resolve(self, *args):
+            return {"intent": "plan", "message": "Жоспар дайын.", "engine": "openai", "payload": {"actions": [
+                {"intent": "diary_add", "payload": {"content": "Нақты орындауды күту"}},
+                {"intent": "reminder_add", "payload": {"title": "Су ішу", "delay_seconds": 60}},
+            ]}}
+
+    with TestClient(create_app(tmp_path, browser=FakeBrowser(), assistant=AssistantDouble())) as client:
+        response = client.post("/api/command", json={"text": "Табиғи екі тапсырма"})
+        assert response.status_code == 200 and response.json()["intent"] == "plan"
+        assert client.get("/api/diary").json()["entries"] == []
+        assert client.get("/api/reminders").json()["reminders"] == []

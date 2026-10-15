@@ -27,8 +27,12 @@
     player: null, playerReady: false, currentTrack: null, playing: false,
     youtubePromise: null, commandBusy: false, browserBusy: false,
     entries: [], reminders: [], notifiedReminders: new Set(),
+    history: [], lastEngine: null, settingsPromise: null,
+    settings: { llm_enabled: true, llm_model: 'gpt-4.1-mini', llm_configured: false, tts_provider: 'edge', tts_voice: 'kk-KZ-DauletNeural', elevenlabs_configured: false, elevenlabs_voice_id: '', elevenlabs_model: 'eleven_v3' },
+    speechGeneration: 0, speechAbort: null, speechAudio: null, speechUrl: null,
+    lastSpeechText: '', lastSpeechLanguage: 'kk-KZ',
   };
-  const viewNames = { home: 'Басты бет', music: 'Музыка', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар' };
+  const viewNames = { home: 'Басты бет', music: 'Музыка', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
   const months = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз', 'қыркүйек', 'қазан', 'қараша', 'желтоқсан'];
   function syncSidebar() { $('#sidebar').inert = mobileMedia.matches && !$('#sidebar').classList.contains('open'); }
@@ -72,18 +76,108 @@
     while ($('#toast-stack').children.length > 4) $('#toast-stack').firstElementChild.remove();
     if (!persistent) setTimeout(() => node.remove(), error ? 9000 : 6500);
   }
-  function speak(message) {
-    if (!state.speech || !('speechSynthesis' in window)) return;
-    const utterance = new SpeechSynthesisUtterance(message);
-    utterance.lang = state.language;
-    const voices = speechSynthesis.getVoices();
-    const matchingVoice = voices.find((voice) => voice.lang.toLowerCase() === state.language.toLowerCase()) ||
-      voices.find((voice) => voice.lang.toLowerCase().startsWith(state.language.slice(0, 2)));
-    if (matchingVoice) utterance.voice = matchingVoice;
-    speechSynthesis.cancel();
-    speechSynthesis.speak(utterance);
+  function speechFeedback(description, { retry = false, stop = false, error = false } = {}) {
+    $('#speech-feedback').hidden = !description;
+    $('#speech-feedback').classList.toggle('error', error);
+    $('#speech-status').textContent = description;
+    $('#speech-retry').hidden = !retry;
+    $('#speech-stop').hidden = !stop;
   }
-  function message(content, role = 'assistant', error = false) {
+  function releaseSpeechAudio() {
+    if (state.speechAudio) {
+      state.speechAudio.onended = null;
+      state.speechAudio.onerror = null;
+      state.speechAudio.pause();
+      state.speechAudio.src = '';
+      state.speechAudio = null;
+    }
+    if (state.speechUrl) { URL.revokeObjectURL(state.speechUrl); state.speechUrl = null; }
+  }
+  function stopSpeech(description = '') {
+    state.speechGeneration += 1;
+    state.speechAbort?.abort();
+    state.speechAbort = null;
+    releaseSpeechAudio();
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    speechFeedback(description);
+  }
+  async function playSpeechAudio(audio, generation) {
+    try {
+      await audio.play();
+      if (generation === state.speechGeneration) speechFeedback('Жауап дауысталып жатыр.', { stop: true });
+    } catch (error) {
+      if (generation !== state.speechGeneration) return;
+      if (error.name === 'NotAllowedError') speechFeedback('Жауап дайын. Тыңдау үшін батырманы басыңыз.', { retry: true });
+      else {
+        releaseSpeechAudio();
+        speechFeedback('Дыбысты ойнату мүмкін болмады. Жауапты мәтіннен оқыңыз.', { retry: true, error: true });
+      }
+    }
+  }
+  async function speak(content, language = state.language) {
+    state.lastSpeechText = String(content || '');
+    state.lastSpeechLanguage = language;
+    if (!state.speech || !state.lastSpeechText) return;
+    stopSpeech();
+    const generation = state.speechGeneration;
+    const text = Array.from(state.lastSpeechText).slice(0, 2000).join('');
+    if (state.settingsPromise) await state.settingsPromise.catch(() => {});
+    if (generation !== state.speechGeneration || !state.speech) return;
+    if (state.settings.tts_provider === 'system') {
+      const matchingVoice = 'speechSynthesis' in window && speechSynthesis.getVoices().find((voice) =>
+        voice.lang.toLowerCase().replace('_', '-').split('-')[0] === language.toLowerCase().split('-')[0]);
+      if (!matchingVoice) {
+        speechFeedback('Компьютерде осы тілдің дауысы жоқ. Баптаулардан Edge дауысын таңдаңыз немесе жауапты мәтіннен оқыңыз.', { retry: true, error: true });
+        return;
+      }
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.voice = matchingVoice; utterance.lang = matchingVoice.lang; utterance.volume = state.volume / 100;
+      utterance.onstart = () => { if (generation === state.speechGeneration) speechFeedback('Жауап дауысталып жатыр.', { stop: true }); };
+      utterance.onend = () => { if (generation === state.speechGeneration) speechFeedback('Жауап дауысталды.'); };
+      utterance.onerror = () => { if (generation === state.speechGeneration) speechFeedback('Компьютер дауысы іске қосылмады. Жауап мәтінде сақталды.', { retry: true, error: true }); };
+      speechSynthesis.speak(utterance);
+      return;
+    }
+    const controller = new AbortController();
+    state.speechAbort = controller;
+    const timer = setTimeout(() => controller.abort(), 45000);
+    speechFeedback('Таңдалған дауыс дайындалуда…', { stop: true });
+    try {
+      const response = await fetch('/api/speech', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, language }), signal: controller.signal,
+      });
+      if (!response.ok) {
+        let detail;
+        try { detail = (await response.json()).detail; } catch { /* A non-JSON service failure is still reported. */ }
+        throw new Error(typeof detail === 'string' ? detail : `Дауыс қызметі жауап бермеді (${response.status}).`);
+      }
+      if (!String(response.headers.get('content-type') || '').startsWith('audio/')) throw new Error('Дауыс қызметі дыбыс файлын қайтармады.');
+      const blob = await response.blob();
+      if (generation !== state.speechGeneration || !state.speech) return;
+      if (!blob.size) throw new Error('Дауыс қызметі бос дыбыс файлын қайтарды.');
+      state.speechUrl = URL.createObjectURL(blob);
+      const audio = new Audio(state.speechUrl);
+      state.speechAudio = audio; audio.volume = state.volume / 100;
+      audio.onended = () => {
+        if (generation !== state.speechGeneration) return;
+        releaseSpeechAudio(); speechFeedback('Жауап дауысталды.');
+      };
+      audio.onerror = () => {
+        if (generation !== state.speechGeneration) return;
+        releaseSpeechAudio(); speechFeedback('Дыбыс файлы ойнатылмады. Жауап мәтінде сақталды.', { retry: true, error: true });
+      };
+      await playSpeechAudio(audio, generation);
+    } catch (error) {
+      if (generation !== state.speechGeneration || !state.speech) return;
+      const detail = error.name === 'AbortError' ? 'Дауыс қызметінің жауабы тым ұзақ күттірді.' : error.message;
+      speechFeedback(`${detail} Жауапты мәтіннен оқи аласыз.`, { retry: true, error: true });
+    } finally {
+      clearTimeout(timer);
+      if (state.speechAbort === controller) state.speechAbort = null;
+    }
+  }
+  function message(content, role = 'assistant', error = false, shouldSpeak = true) {
     const node = document.createElement('div');
     node.className = `chat-message ${role}${error ? ' error' : ''}`;
     const avatar = document.createElement('span');
@@ -98,7 +192,9 @@
     while (conversation.children.length > 24) conversation.firstElementChild.remove();
     conversation.classList.add('has-messages');
     conversation.scrollTop = conversation.scrollHeight;
-    if (role === 'assistant' && !error) speak(content);
+    state.history.push({ role, content: String(content) });
+    if (state.history.length > 8) state.history = state.history.slice(-8);
+    if (role === 'assistant' && !error && shouldSpeak) speak(content);
   }
   function showView(view, updateHash = true) {
     if (!Object.hasOwn(viewNames, view)) view = 'home';
@@ -173,16 +269,10 @@
     } else {
       $('#voice-notice').textContent = 'Бұл ортада дауыс тану қолжетімсіз. Пәрменді жазыңыз немесе Chrome/Edge арқылы localhost-та ашыңыз.';
     }
-    if (!('speechSynthesis' in window)) {
-      state.speech = false;
-      $('#speech-toggle').disabled = true;
-      $('#speech-toggle').title = 'Бұл ортада жауапты дауыстау қолжетімсіз';
-      updateSpeechToggle();
-    }
   }
   async function listen() {
     if (state.commandBusy || state.nativeListening) return;
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    stopSpeech();
     if (state.health?.desktop_mode && state.health?.native_voice_available) {
       state.nativeListening = true;
       setListening(false);
@@ -264,6 +354,58 @@
     configureVoice();
   }
 
+  function renderEngineStatus() {
+    const enabled = Boolean(state.settings.llm_enabled && state.settings.llm_configured);
+    const badge = $('#engine-status');
+    badge.classList.toggle('ai-ready', enabled);
+    badge.textContent = enabled ? `${state.lastEngine === 'openai' ? 'GPT' : 'GPT дайын'} · ${state.settings.llm_model}` : 'Жергілікті пәрмендер';
+    badge.title = enabled ? 'GPT қосылған. Нақты пәрмендер жергілікті де орындала алады.' : 'GPT үшін Баптауларға OpenAI API кілтін қосыңыз.';
+  }
+  function updateProviderFields() {
+    const provider = $('#tts-provider').value;
+    $('#edge-voice-field').hidden = provider !== 'edge';
+    $('#elevenlabs-fields').hidden = provider !== 'elevenlabs';
+    $('#system-voice-note').hidden = provider !== 'system';
+  }
+  function acceptSettings(settings) {
+    const fields = ['llm_enabled', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model'];
+    for (const field of fields) if (Object.hasOwn(settings, field)) state.settings[field] = settings[field];
+    $('#llm-enabled').checked = Boolean(state.settings.llm_enabled);
+    $('#llm-model').value = state.settings.llm_model || 'gpt-4.1-mini';
+    $('#tts-provider').value = state.settings.tts_provider || 'edge';
+    $('#tts-voice').value = state.settings.tts_voice || 'kk-KZ-DauletNeural';
+    $('#elevenlabs-voice-id').value = state.settings.elevenlabs_voice_id || '';
+    $('#elevenlabs-model').value = state.settings.elevenlabs_model || 'eleven_v3';
+    $('#llm-key-status').textContent = state.settings.llm_configured ? 'кілт сақталған' : 'қосылмаған';
+    $('#elevenlabs-key-status').textContent = state.settings.elevenlabs_configured ? 'кілт сақталған' : 'қосылмаған';
+    $('#clear-llm-key').checked = false;
+    $('#clear-elevenlabs-key').checked = false;
+    $('#clear-llm-key').disabled = !state.settings.llm_configured;
+    $('#clear-elevenlabs-key').disabled = !state.settings.elevenlabs_configured;
+    $('#settings-status').textContent = state.settings.llm_enabled && state.settings.llm_configured ? 'GPT қосылған' : 'Негізгі пәрмендер дайын';
+    updateProviderFields(); renderEngineStatus();
+  }
+  async function loadSettings() { acceptSettings(await api('/api/settings')); }
+  async function saveSettings() {
+    const result = $('#settings-result');
+    result.classList.remove('error'); result.textContent = 'Баптаулар сақталуда…';
+    const body = {
+      llm_enabled: $('#llm-enabled').checked, llm_model: $('#llm-model').value.trim(),
+      tts_provider: $('#tts-provider').value, tts_voice: $('#tts-voice').value,
+      elevenlabs_voice_id: $('#elevenlabs-voice-id').value.trim(),
+      elevenlabs_model: $('#elevenlabs-model').value.trim() || 'eleven_v3',
+      llm_api_key: $('#llm-api-key').value.trim(), elevenlabs_api_key: $('#elevenlabs-api-key').value.trim(),
+      clear_llm_api_key: $('#clear-llm-key').checked, clear_elevenlabs_api_key: $('#clear-elevenlabs-key').checked,
+    };
+    try {
+      if ((body.clear_llm_api_key && body.llm_api_key) || (body.clear_elevenlabs_api_key && body.elevenlabs_api_key)) throw new Error('Кілтті жою немесе жаңарту әрекетінің бірін таңдаңыз.');
+      const settings = await post('/api/settings', body);
+      stopSpeech(); acceptSettings(settings);
+      $('#llm-api-key').value = ''; $('#elevenlabs-api-key').value = '';
+      result.textContent = 'Баптаулар сақталды. Таңдалған дауысты тексеріп көріңіз.';
+    } catch (error) { result.classList.add('error'); result.textContent = error.message; throw error; }
+  }
+
   function youtubeSearchLink(query) { return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`; }
   function appendSearchFallback(container, query) {
     const link = document.createElement('a');
@@ -273,7 +415,7 @@
     link.textContent = 'YouTube-та іздеу нәтижелерін ашу ↗';
     container.append(link);
   }
-  async function searchMusic(query, autoSelect = false) {
+  async function searchMusic(query, autoSelect = false, strict = false) {
     query = String(query || '').trim();
     if (!query) throw new Error('Ән немесе орындаушы атауын енгізіңіз.');
     $('#music-query').value = query;
@@ -285,6 +427,7 @@
     catch (error) {
       $('#music-notice').textContent = error.message;
       appendSearchFallback(results, query);
+      if (strict) throw error;
       return 'Іздеу қолжетімсіз. YouTube-та іздеу сілтемесін ашуға болады.';
     }
     const tracks = Array.isArray(response.tracks) ? response.tracks : [];
@@ -310,6 +453,7 @@
     appendSearchFallback(results, query);
     if (!tracks.length || results.children.length === 1) {
       $('#music-notice').textContent = response.error || 'Нәтиже табылмады. YouTube-та іздеуді жалғастыра аласыз.';
+      if (strict) throw new Error($('#music-notice').textContent);
       return 'Музыка нәтижесі табылмады. YouTube-та іздеу сілтемесі дайын.';
     }
     $('#music-notice').textContent = 'Әнді таңдап ойнатыңыз. Автоматты ойнату үшін қосымша басу қажет болуы мүмкін.';
@@ -399,6 +543,7 @@
     $('#volume-value').textContent = `${state.volume}%`;
     remember('ayan-volume', state.volume);
     if (state.playerReady) state.player.setVolume(state.volume);
+    if (state.speechAudio) state.speechAudio.volume = state.volume / 100;
   }
   function controlMusic(payload) {
     if (payload.action === 'volume') {
@@ -420,11 +565,14 @@
       dialog.showModal();
     });
   }
-  async function browserAction(payload) {
+  async function browserAction(payload, stopOnCancel = false) {
     if (state.browserBusy) throw new Error('Алдыңғы браузер әрекеті орындалып жатыр. Аяқталғанын күтіңіз.');
     const request = { ...payload };
     if (request.action === 'click') {
-      if (!(await confirmClick(request.target))) return 'Басу әрекетінен бас тартылды.';
+      if (!(await confirmClick(request.target))) {
+        if (stopOnCancel) throw new Error('Басу әрекетінен бас тартылды. Кейінгі қадамдар орындалмады.');
+        return 'Басу әрекетінен бас тартылды.';
+      }
       request.confirmed = true;
     }
     state.browserBusy = true;
@@ -534,38 +682,68 @@
     renderReminders();
   }
 
+  async function executeIntent(intent, payload = {}, reply = 'Пәрмен орындалды.', inPlan = false) {
+    const serverIntents = ['diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
+    if (inPlan && serverIntents.includes(intent)) {
+      const result = await post('/api/assistant/action', { intent, payload });
+      payload = result.payload || payload;
+      reply = result.message || reply;
+    }
+    switch (intent) {
+      case 'music_search':
+        showView('music'); return searchMusic(payload.query, true, inPlan);
+      case 'music_control':
+        showView('music');
+        if (inPlan && payload.action !== 'volume' && !state.playerReady) throw new Error('Алдымен әнді таңдап, ойнатқыштың дайын болғанын күтіңіз.');
+        return controlMusic(payload);
+      case 'browser_open':
+        showView('browser'); return browserAction({ action: 'open', url: payload.url }, inPlan);
+      case 'browser_action':
+        showView('browser'); return browserAction(payload, inPlan);
+      case 'diary_add':
+      case 'diary_list':
+        showView('diary'); await loadDiary(); return reply;
+      case 'reminder_add':
+      case 'reminders_list':
+        showView('reminders'); await loadReminders(); return reply;
+      case 'time':
+        if (payload.current_time) return `Қазір сағат ${new Date(payload.current_time).toLocaleTimeString('kk-KZ', { hour: '2-digit', minute: '2-digit' })}.`;
+        return reply;
+      default:
+        if (inPlan) throw new Error('Бұл жоспар қадамы қолдау таппайды.');
+        return reply;
+    }
+  }
+  async function executePlan(result) {
+    const actions = result.payload?.actions;
+    const allowed = ['music_search', 'music_control', 'browser_open', 'browser_action', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
+    if (!Array.isArray(actions) || !actions.length || actions.length > 6) throw new Error('Жоспарда 1–6 қадам болуы керек. Сұрағыңызды шағын бөліктерге бөліңіз.');
+    if (actions.some((action) => !action || !allowed.includes(action.intent) || !action.payload || typeof action.payload !== 'object' || Array.isArray(action.payload))) throw new Error('Жоспар қадамының пішімі жарамсыз. Қайта сұрап көріңіз.');
+    for (let index = 0; index < actions.length; index += 1) {
+      const action = actions[index];
+      setAssistantState(`${index + 1}/${actions.length} қадам орындалуда…`);
+      try {
+        const reply = await executeIntent(action.intent, action.payload, 'Қадам орындалды.', true);
+        message(`${index + 1}. ${reply}`, 'assistant', false, false);
+      } catch (error) {
+        throw new Error(`${index + 1}-қадам тоқтатылды: ${error.message} Қалған қадамдар орындалмады.`);
+      }
+    }
+    return result.message || `${actions.length} қадам аяқталды.`;
+  }
   async function handleCommand(text) {
     text = String(text || '').trim();
     if (!text || state.commandBusy) return;
     state.commandBusy = true;
     const send = $('.send-button'); send.disabled = true;
+    const history = state.history.slice(-8).map(({ role, content }) => ({ role, content }));
+    stopSpeech();
     message(text, 'user'); $('#command-input').value = '';
     setAssistantState('Ойыңызды әрекетке айналдырамын…');
     try {
-      const result = await post('/api/command', { text, volume: state.volume });
-      const payload = result.payload || {};
-      let reply = result.message || 'Пәрмен қабылданды.';
-      switch (result.intent) {
-        case 'music_search':
-          showView('music'); reply = await searchMusic(payload.query, true); break;
-        case 'music_control':
-          showView('music'); reply = controlMusic(payload); break;
-        case 'browser_open':
-          showView('browser'); reply = await browserAction({ action: 'open', url: payload.url }); break;
-        case 'browser_action':
-          showView('browser'); reply = await browserAction(payload); break;
-        case 'diary_add':
-          showView('diary'); await loadDiary(); break;
-        case 'diary_list':
-          showView('diary'); await loadDiary(); break;
-        case 'reminder_add':
-        case 'reminders_list':
-          showView('reminders'); await loadReminders(); break;
-        case 'time':
-          if (payload.current_time) reply = `Қазір сағат ${new Date(payload.current_time).toLocaleTimeString('kk-KZ', { hour: '2-digit', minute: '2-digit' })}.`;
-          break;
-        default: break;
-      }
+      const result = await post('/api/command', { text, volume: state.volume, language: state.language, history });
+      state.lastEngine = result.engine || null; renderEngineStatus();
+      const reply = result.intent === 'plan' ? await executePlan(result) : await executeIntent(result.intent, result.payload || {}, result.message || 'Пәрмен қабылданды.');
       message(reply);
     } catch (error) { message(error.message, 'assistant', true); }
     finally { state.commandBusy = false; send.disabled = false; setAssistantState(state.listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын'); }
@@ -602,7 +780,21 @@
   $('#voice-language').addEventListener('change', (event) => { state.language = event.target.value; remember('ayan-language', state.language); });
   $('#speech-toggle').addEventListener('click', () => {
     state.speech = !state.speech; remember('ayan-speech', state.speech); updateSpeechToggle();
-    if (!state.speech && 'speechSynthesis' in window) speechSynthesis.cancel();
+    if (!state.speech) stopSpeech();
+  });
+  $('#speech-stop').addEventListener('click', () => stopSpeech('Дауыс тоқтатылды.'));
+  $('#speech-retry').addEventListener('click', () => {
+    if (!state.speech) return;
+    if (state.speechAudio) playSpeechAudio(state.speechAudio, state.speechGeneration);
+    else if (state.lastSpeechText) speak(state.lastSpeechText, state.lastSpeechLanguage);
+  });
+  $('#tts-provider').addEventListener('change', updateProviderFields);
+  $('#settings-form').addEventListener('submit', (event) => {
+    event.preventDefault(); withFormBusy(event.currentTarget, saveSettings);
+  });
+  $('#voice-test').addEventListener('click', () => {
+    if (!state.speech) { state.speech = true; remember('ayan-speech', true); updateSpeechToggle(); }
+    speak('Сәлем! Мен Аянмын. Сізге қазақ тілінде көмектесуге дайынмын.', 'kk-KZ');
   });
   $('#music-search-form').addEventListener('submit', (event) => {
     event.preventDefault(); withFormBusy(event.currentTarget, () => searchMusic($('#music-query').value));
@@ -644,6 +836,8 @@
   $('#today').textContent = dateLabel(today, false);
   showView(window.location.hash.slice(1) || 'home', false);
   updateSpeechToggle(); updateBrowserActionFields(); setVolume(state.volume); configureVoice();
+  state.settingsPromise = loadSettings();
+  state.settingsPromise.catch(() => { $('#settings-status').textContent = 'Баптаулар жүктелмеді'; });
   checkHealth();
   Promise.allSettled([loadDiary(), loadReminders()]).then((results) => {
     if (results.some((result) => result.status === 'rejected')) toast('Жазбаларды жүктеу мүмкін болмады. Бағдарламамен байланысты тексеріңіз.', true);
@@ -654,6 +848,7 @@
   setInterval(checkHealth, 60000);
   window.addEventListener('beforeunload', () => {
     if (state.recognition && state.listening) state.recognition.abort();
-    if ('speechSynthesis' in window) speechSynthesis.cancel();
+    stopSpeech();
+    $('#llm-api-key').value = ''; $('#elevenlabs-api-key').value = '';
   });
 })();

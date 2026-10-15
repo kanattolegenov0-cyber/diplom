@@ -9,3 +9,6 @@ build/
 dist/
 *.spec
 *.log
+preferences.json
+preferences.json.tmp
+*.mp3

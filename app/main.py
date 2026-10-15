@@ -8,14 +8,17 @@ import os
 import sys
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .browser import BrowserError, BrowserService
-from .commands import parse_command
+from .assistant import AssistantService, validate_action
 from .music import MusicError, MusicService
+from .preferences import Preferences
+from .speech import SpeechError, SpeechService
 from .storage import Store
 from . import voice
 
@@ -23,6 +26,8 @@ from . import voice
 class CommandInput(BaseModel):
     text: str = Field(min_length=1, max_length=10000)
     volume: int = Field(default=60, ge=0, le=100)
+    language: Literal["kk-KZ", "ru-RU"] = "kk-KZ"
+    history: list[dict] = Field(default_factory=list, max_length=8)
 
 
 class EntryInput(BaseModel):
@@ -47,13 +52,55 @@ class VoiceInput(BaseModel):
     language: Literal["kk-KZ", "ru-RU"] = "kk-KZ"
 
 
-def create_app(data_dir: Path | None = None, browser=None, music=None) -> FastAPI:
+class SpeechInput(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    language: Literal["kk-KZ", "ru-RU"] = "kk-KZ"
+
+
+class SettingsInput(BaseModel):
+    llm_enabled: bool | None = None
+    llm_model: str | None = Field(default=None, max_length=100)
+    tts_provider: Literal["edge", "elevenlabs", "system"] | None = None
+    tts_voice: Literal["kk-KZ-DauletNeural", "kk-KZ-AigulNeural"] | None = None
+    elevenlabs_voice_id: str | None = Field(default=None, max_length=64)
+    elevenlabs_model: Literal["eleven_v3", "eleven_multilingual_v2"] | None = None
+    llm_api_key: str | None = Field(default=None, max_length=4096, repr=False)
+    elevenlabs_api_key: str | None = Field(default=None, max_length=4096, repr=False)
+    clear_llm_api_key: bool = False
+    clear_elevenlabs_api_key: bool = False
+
+
+class AssistantActionInput(BaseModel):
+    intent: Literal["diary_add", "diary_list", "reminder_add", "reminders_list", "time"]
+    payload: dict = Field(default_factory=dict)
+
+
+def execute_local_action(result: dict, store: Store) -> dict:
+    intent, payload = result["intent"], result["payload"]
+    if intent == "diary_add":
+        result["data"] = {"entry": store.add_entry(payload["content"])}
+    elif intent == "diary_list":
+        result["data"] = {"entries": store.entries()}
+    elif intent == "reminder_add":
+        result["data"] = {"reminder": store.add_reminder(payload["title"], payload["delay_seconds"])}
+    elif intent == "reminders_list":
+        result["data"] = {"reminders": store.reminders()}
+    elif intent == "time":
+        result["payload"] = {"current_time": datetime.now().astimezone().isoformat()}
+    return result
+
+
+def create_app(data_dir: Path | None = None, browser=None, music=None, assistant=None, speech=None) -> FastAPI:
     browser = browser or BrowserService()
     music = music or MusicService()
 
     @asynccontextmanager
     async def lifespan(application):
-        application.state.store = Store(data_dir or Path(os.environ.get("AYAN_DATA_DIR", "data")))
+        directory = data_dir or Path(os.environ.get("AYAN_DATA_DIR", "data"))
+        application.state.store = Store(directory)
+        application.state.preferences = Preferences(directory)
+        application.state.assistant = assistant or AssistantService(application.state.preferences)
+        application.state.speech = speech or SpeechService(application.state.preferences)
         yield
         await browser.close()
 
@@ -75,6 +122,13 @@ def create_app(data_dir: Path | None = None, browser=None, music=None) -> FastAP
     async def value_error(request, exc):
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
+    @application.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        # Never echo secret input in settings validation errors.
+        if request.url.path == "/api/settings":
+            return JSONResponse({"detail": "Баптау мәндері дұрыс емес. Модель мен дауыс баптауын тексеріңіз."}, status_code=422)
+        return JSONResponse({"detail": "Сұрау мәндері дұрыс емес."}, status_code=422)
+
     @application.get("/api/health")
     async def health():
         return {"status": "ok", "name": "AYAN", "browser_available": await browser.available(),
@@ -83,20 +137,35 @@ def create_app(data_dir: Path | None = None, browser=None, music=None) -> FastAP
 
     @application.post("/api/command")
     async def command(body: CommandInput, request: Request):
-        result = parse_command(body.text, body.volume)
-        store = request.app.state.store
-        intent, payload = result["intent"], result["payload"]
-        if intent == "diary_add":
-            result["data"] = {"entry": store.add_entry(payload["content"])}
-        elif intent == "diary_list":
-            result["data"] = {"entries": store.entries()}
-        elif intent == "reminder_add":
-            result["data"] = {"reminder": store.add_reminder(payload["title"], payload["delay_seconds"])}
-        elif intent == "reminders_list":
-            result["data"] = {"reminders": store.reminders()}
-        elif intent == "time":
-            result["payload"] = {"current_time": datetime.now().astimezone().isoformat()}
-        return result
+        now = datetime.now().astimezone()
+        context = {"current_time": now.isoformat(), "timezone": str(now.tzinfo)}
+        result = await request.app.state.assistant.resolve(
+            body.text, body.volume, body.language, body.history, context)
+        return execute_local_action(result, request.app.state.store)
+
+    @application.post("/api/assistant/action")
+    async def assistant_action(body: AssistantActionInput, request: Request):
+        action = validate_action({"intent": body.intent, "payload": body.payload})
+        messages = {"diary_add": "Күнделікке жазылды.", "diary_list": "Күнделік жазбалары.",
+                    "reminder_add": "Еске салу қосылды.", "reminders_list": "Еске салулар тізімі.",
+                    "time": "Ағымдағы уақыт."}
+        return execute_local_action({**action, "message": messages[body.intent]}, request.app.state.store)
+
+    @application.get("/api/settings")
+    async def settings(request: Request):
+        return request.app.state.preferences.public()
+
+    @application.post("/api/settings")
+    async def update_settings(body: SettingsInput, request: Request):
+        return request.app.state.preferences.update(body.model_dump(exclude_none=True, exclude_unset=True))
+
+    @application.post("/api/speech")
+    async def speech_response(body: SpeechInput, request: Request):
+        try:
+            audio = await request.app.state.speech.synthesize(body.text, body.language)
+            return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
+        except SpeechError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     @application.get("/api/diary")
     async def diary(request: Request):

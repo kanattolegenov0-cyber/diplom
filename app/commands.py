@@ -10,6 +10,35 @@ from urllib.parse import urlsplit, urlunsplit
 MAX_REMINDER_DELAY = 30 * 24 * 60 * 60
 _FLAGS = re.IGNORECASE | re.DOTALL
 
+_PLAYLIST_NAME = (
+    r"(?:(?:менің\s+)?(?:плейлист(?:ім(?:ді)?|ті)?|"
+    r"жиі\s+тыңда(?:йтын|ған|лған)\s+(?:әндер|өлеңдер)(?:ім(?:ді)?|ді)?)|"
+    r"(?:мой\s+)?плейлист|(?:мои\s+)?часто\s+(?:слушаемые|прослушиваемые)\s+(?:песни|треки))"
+)
+
+
+def mentions_playlist(text: str) -> bool:
+    """Keep playlist requests out of the bare-song fallback."""
+    return bool(re.search(
+        r"\b(?:плейлист[а-яәғқңөұүһі]*|playlists?|"
+        r"жиі\s+тыңда(?:йтын|ған|лған)|часто\s+(?:слушаемые|прослушиваемые))\b",
+        text, _FLAGS,
+    ))
+
+
+def _playlist_command(command: str) -> dict | None:
+    if re.fullmatch(
+        rf"(?:{_PLAYLIST_NAME}\s+(?:қос|қой|ойнат|қосып\s+бер)|"
+        rf"(?:включи|запусти|проиграй)\s+{_PLAYLIST_NAME})[.!]?", command, _FLAGS
+    ):
+        return _result("music_playlist", "Жиі тыңдалған әндер плейлистін қосамын.", action="play")
+    if re.fullmatch(
+        rf"(?:{_PLAYLIST_NAME}(?:\s+(?:көрсет|аш))?|"
+        rf"(?:покажи|открой)\s+{_PLAYLIST_NAME})[.!]?", command, _FLAGS
+    ):
+        return _result("music_playlist", "Жиі тыңдалған әндер плейлисті ашылады.", action="show")
+    return None
+
 
 def _result(intent: str, message: str, **payload: object) -> dict:
     return {"intent": intent, "message": message, "payload": payload}
@@ -132,6 +161,10 @@ def parse_command(text: str, volume: int = 60) -> dict:
     if re.fullmatch(r"(?:еске\s+салулар(?:ды\s+көрсет)?|(?:покажи\s+)?напоминания|список\s+напоминаний)", command, _FLAGS):
         return _result("reminders_list", "Еске салулар тізімі.")
 
+    playlist = _playlist_command(command)
+    if playlist:
+        return playlist
+
     match = re.fullmatch(r"(?:сайт\s+аш|(?:открой|открыть)\s+(?:сайт\s+)?|open\s+)(.+)", command, _FLAGS)
     if not match:
         match = re.fullmatch(r"(.+?)\s+сайтын\s+аш", command, _FLAGS)
@@ -183,5 +216,7 @@ def parse_command(text: str, volume: int = 60) -> dict:
         match = re.fullmatch(r"(.+?)\s+(?:әнін|музыкасын)\s+қос", command, _FLAGS)
     if match:
         query = _unquote(match.group(1))
+        if mentions_playlist(query):
+            return _unknown("Жиі тыңдалған әндерді қосу үшін «плейлистімді қос» деп айтыңыз.")
         return _result("music_search", f"YouTube-тен іздеу: {query}.", query=query) if query else _unknown("Әннің атын айтыңыз.")
     return _unknown()

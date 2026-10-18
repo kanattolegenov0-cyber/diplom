@@ -66,6 +66,16 @@ class SpeechService:
         self._cache: OrderedDict[tuple[str, ...], tuple[float, bytes]] = OrderedDict()
         self._model_cache: OrderedDict[str, tuple[float, dict[str, frozenset[str]]]] = OrderedDict()
 
+    def _prosody(self) -> tuple[str, int, int]:
+        style = self.preferences.get("speech_style", "serious")
+        rate = self.preferences.get("speech_rate", -8 if style == "serious" else 0)
+        pitch = self.preferences.get("speech_pitch", -8 if style == "serious" else 0)
+        if not isinstance(style, str) or style not in {"serious", "natural"} or type(rate) is not int or type(pitch) is not int:
+            raise SpeechError("Дауыс мәнерінің баптауы дұрыс емес.")
+        if not -30 <= rate <= 20 or not -20 <= pitch <= 10:
+            raise SpeechError("Дауыс жылдамдығы немесе биіктігі рұқсат етілген аралықтан тыс.")
+        return style, rate, pitch
+
     def _settings(self, language: str) -> tuple[str, str, str]:
         provider = self.preferences.get("tts_provider", "edge")
         if provider == "edge":
@@ -99,7 +109,8 @@ class SpeechService:
             raise SpeechError("Қазір қазақ және орыс тілдеріндегі дыбыстау қолжетімді.")
         provider, voice, model = self._settings(language)
         text = text.strip()
-        cache_key = (provider, voice, model, language, hashlib.sha256(text.encode()).hexdigest())
+        style, rate, pitch = self._prosody()
+        cache_key = (provider, voice, model, language, style, str(rate), str(pitch), hashlib.sha256(text.encode()).hexdigest())
         async with self._lock:
             now = time.monotonic()
             for key, (created, _) in list(self._cache.items()):
@@ -110,8 +121,8 @@ class SpeechService:
                 return self._cache[cache_key][1]
             try:
                 async with asyncio.timeout(30):
-                    audio = (await self._edge(text, voice) if provider == "edge"
-                             else await self._elevenlabs(text, voice, model, language))
+                    audio = (await self._edge(text, voice, prosody=(style, rate, pitch)) if provider == "edge"
+                             else await self._elevenlabs(text, voice, model, language, prosody=(style, rate, pitch)))
                 if not audio:
                     raise SpeechError("Дауыс сервері бос жауап берді. Қайта көріңіз.")
                 if len(audio) > MAX_AUDIO_BYTES:
@@ -129,7 +140,7 @@ class SpeechService:
                 self._cache.popitem(last=False)
             return audio
 
-    async def _edge(self, text: str, voice: str) -> bytes:
+    async def _edge(self, text: str, voice: str, *, prosody=None) -> bytes:
         try:
             import edge_tts
             import edge_tts.communicate as communicate_module
@@ -138,8 +149,10 @@ class SpeechService:
         _edge_trust_context(communicate_module)
         proxy = (os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
                  or os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy"))
+        _, rate, pitch = prosody or self._prosody()
         communicator = edge_tts.Communicate(
-            text, voice=voice, proxy=proxy, connect_timeout=10, receive_timeout=20,
+            text, voice=voice, rate=f"{rate:+d}%", pitch=f"{pitch:+d}Hz",
+            proxy=proxy, connect_timeout=10, receive_timeout=20,
         )
         audio = bytearray()
         async for chunk in communicator.stream():
@@ -208,7 +221,7 @@ class SpeechService:
                 "Қазақша жауап үшін Edge дауысын таңдаңыз."
             )
 
-    async def _elevenlabs(self, text: str, voice: str, model: str, language: str) -> bytes:
+    async def _elevenlabs(self, text: str, voice: str, model: str, language: str, *, prosody=None) -> bytes:
         # Voice IDs are validated before reaching this method; the host is fixed.
         key = self.preferences.secret("elevenlabs_api_key")
         if not key:
@@ -217,11 +230,17 @@ class SpeechService:
             timeout=25, verify=_verified_ssl_context(), follow_redirects=False,
         ) as client:
             await self._require_model_language(client, key, model, language)
+            style, rate, _ = prosody or self._prosody()
+            voice_settings = {
+                "stability": 0.5 if model == "eleven_v3" else (0.7 if style == "serious" else 0.5),
+                "similarity_boost": 0.85, "style": 0.15 if style == "serious" else 0.3,
+                "use_speaker_boost": True, "speed": 1 + rate / 100,
+            }
             async with client.stream(
                 "POST", f"https://api.elevenlabs.io/v1/text-to-speech/{voice}",
                 params={"output_format": "mp3_44100_128"},
                 headers={"xi-api-key": key, "Accept": "audio/mpeg"},
-                json={"text": text, "model_id": model},
+                json={"text": text, "model_id": model, "voice_settings": voice_settings},
             ) as response:
                 self._check_elevenlabs_status(response)
                 if response.headers.get("content-type", "").split(";", 1)[0] not in {"audio/mpeg", "audio/mp3"}:

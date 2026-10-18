@@ -28,9 +28,14 @@
     youtubePromise: null, commandBusy: false, browserBusy: false,
     entries: [], reminders: [], notifiedReminders: new Set(),
     history: [], lastEngine: null, settingsPromise: null,
-    settings: { llm_enabled: true, llm_model: 'gpt-4.1-mini', llm_configured: false, tts_provider: 'edge', tts_voice: 'kk-KZ-DauletNeural', elevenlabs_configured: false, elevenlabs_voice_id: '', elevenlabs_model: 'eleven_v3' },
+    settings: { llm_enabled: true, llm_model: 'gpt-4.1-mini', llm_configured: false, tts_provider: 'edge', tts_voice: 'kk-KZ-DauletNeural', elevenlabs_configured: false, elevenlabs_voice_id: '', elevenlabs_model: 'eleven_v3', speech_style: 'serious', speech_rate: -8, speech_pitch: -8, wake_enabled: true, wake_language: 'kk-KZ' },
     speechGeneration: 0, speechAbort: null, speechAudio: null, speechUrl: null,
     lastSpeechText: '', lastSpeechLanguage: 'kk-KZ',
+    speechBusy: false, wakeStatus: null, wakeCursor: 0, wakeSeen: new Set(), wakePrimed: false,
+    wakePollTimer: null, wakePollRunning: false, wakeInstalling: false, wakeChanging: false,
+    wakeActivityPromise: null, wakeActivityLast: null, wakeActivityForce: false, closing: false,
+    playlist: [], playlistQueue: [], playlistQueueIndex: -1, playlistQueueActive: false,
+    listenSession: null,
   };
   const viewNames = { home: 'Басты бет', music: 'Музыка', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
@@ -99,14 +104,19 @@
     state.speechAbort = null;
     releaseSpeechAudio();
     if ('speechSynthesis' in window) speechSynthesis.cancel();
+    setSpeechBusy(false);
     speechFeedback(description);
   }
   async function playSpeechAudio(audio, generation) {
     try {
+      setSpeechBusy(true);
+      if (!(await syncWakeActivity())) throw new Error('Шақыруды қауіпсіз үзу мүмкін болмады.');
+      if (generation !== state.speechGeneration || !state.speech) return;
       await audio.play();
       if (generation === state.speechGeneration) speechFeedback('Жауап дауысталып жатыр.', { stop: true });
     } catch (error) {
       if (generation !== state.speechGeneration) return;
+      setSpeechBusy(false);
       if (error.name === 'NotAllowedError') speechFeedback('Жауап дайын. Тыңдау үшін батырманы басыңыз.', { retry: true });
       else {
         releaseSpeechAudio();
@@ -123,18 +133,27 @@
     const text = Array.from(state.lastSpeechText).slice(0, 2000).join('');
     if (state.settingsPromise) await state.settingsPromise.catch(() => {});
     if (generation !== state.speechGeneration || !state.speech) return;
+    setSpeechBusy(true);
+    if (!(await syncWakeActivity())) {
+      if (generation !== state.speechGeneration) return;
+      setSpeechBusy(false);
+      speechFeedback('Шақыруды үзу мүмкін болмады. Жауапты мәтіннен оқыңыз.', { retry: true, error: true });
+      return;
+    }
+    if (generation !== state.speechGeneration || !state.speech) return;
     if (state.settings.tts_provider === 'system') {
       const matchingVoice = 'speechSynthesis' in window && speechSynthesis.getVoices().find((voice) =>
         voice.lang.toLowerCase().replace('_', '-').split('-')[0] === language.toLowerCase().split('-')[0]);
       if (!matchingVoice) {
+        setSpeechBusy(false);
         speechFeedback('Компьютерде осы тілдің дауысы жоқ. Баптаулардан Edge дауысын таңдаңыз немесе жауапты мәтіннен оқыңыз.', { retry: true, error: true });
         return;
       }
       const utterance = new SpeechSynthesisUtterance(text);
       utterance.voice = matchingVoice; utterance.lang = matchingVoice.lang; utterance.volume = state.volume / 100;
       utterance.onstart = () => { if (generation === state.speechGeneration) speechFeedback('Жауап дауысталып жатыр.', { stop: true }); };
-      utterance.onend = () => { if (generation === state.speechGeneration) speechFeedback('Жауап дауысталды.'); };
-      utterance.onerror = () => { if (generation === state.speechGeneration) speechFeedback('Компьютер дауысы іске қосылмады. Жауап мәтінде сақталды.', { retry: true, error: true }); };
+      utterance.onend = () => { if (generation === state.speechGeneration) { setSpeechBusy(false); speechFeedback('Жауап дауысталды.'); } };
+      utterance.onerror = () => { if (generation === state.speechGeneration) { setSpeechBusy(false); speechFeedback('Компьютер дауысы іске қосылмады. Жауап мәтінде сақталды.', { retry: true, error: true }); } };
       speechSynthesis.speak(utterance);
       return;
     }
@@ -161,15 +180,16 @@
       state.speechAudio = audio; audio.volume = state.volume / 100;
       audio.onended = () => {
         if (generation !== state.speechGeneration) return;
-        releaseSpeechAudio(); speechFeedback('Жауап дауысталды.');
+        releaseSpeechAudio(); setSpeechBusy(false); speechFeedback('Жауап дауысталды.');
       };
       audio.onerror = () => {
         if (generation !== state.speechGeneration) return;
-        releaseSpeechAudio(); speechFeedback('Дыбыс файлы ойнатылмады. Жауап мәтінде сақталды.', { retry: true, error: true });
+        releaseSpeechAudio(); setSpeechBusy(false); speechFeedback('Дыбыс файлы ойнатылмады. Жауап мәтінде сақталды.', { retry: true, error: true });
       };
       await playSpeechAudio(audio, generation);
     } catch (error) {
       if (generation !== state.speechGeneration || !state.speech) return;
+      setSpeechBusy(false);
       const detail = error.name === 'AbortError' ? 'Дауыс қызметінің жауабы тым ұзақ күттірді.' : error.message;
       speechFeedback(`${detail} Жауапты мәтіннен оқи аласыз.`, { retry: true, error: true });
     } finally {
@@ -226,6 +246,7 @@
     $('#mic-button').setAttribute('aria-label', listening ? 'Тыңдауды тоқтату' : 'Дауыстық пәрмен беру');
     $('.orb-scene').classList.toggle('listening', listening);
     setAssistantState(listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын');
+    syncWakeActivity();
   }
   function updateSpeechToggle() {
     const button = $('#speech-toggle');
@@ -259,11 +280,11 @@
       };
       state.recognition = recognition;
     }
-    if (state.nativeListening) return;
+    if (state.nativeListening || wakeCommandCapture()) return;
     const native = Boolean(state.health?.desktop_mode && state.health?.native_voice_available);
     $('#mic-button').disabled = !native && !state.recognition;
     if (native) {
-      $('#voice-notice').textContent = 'Микрофонды басып, «Айтыңыз» деген белгі шыққаннан кейін сөйлеңіз. Дауыс тану үшін интернет керек; фондық тыңдау жоқ.';
+      $('#voice-notice').textContent = 'Қолмен пәрмен беру үшін микрофонды басып, «Айтыңыз» белгісін күтіңіз. Дауыс тануға интернет керек. Тұрақты шақыру күйі төменде көрсетілген.';
     } else if (state.recognition) {
       $('#voice-notice').textContent = 'Дауыс тану Chrome/Edge және HTTPS/localhost-та қолжетімді. Тек микрофонды басқан кезде тыңдаймын.';
     } else {
@@ -272,9 +293,9 @@
   }
   async function listen() {
     if (state.commandBusy || state.nativeListening) return;
-    stopSpeech();
     if (state.health?.desktop_mode && state.health?.native_voice_available) {
       state.nativeListening = true;
+      stopSpeech();
       setListening(false);
       setAssistantState('Микрофон дайындалуда…');
       $('#voice-notice').textContent = 'Микрофон дайындалуда. «Айтыңыз» белгісі шыққанша үнсіз күтіңіз.';
@@ -319,6 +340,8 @@
         }
       };
       try {
+        await syncWakeActivity();
+        await post('/api/wake/stop', {});
         const listenRequest = post('/api/voice/listen', { language: state.language }, { timeout: 45000 });
         pollVoiceStatus();
         const result = await listenRequest;
@@ -328,9 +351,17 @@
         if (text) { $('#command-input').value = text; await handleCommand(text); }
         else toast('Пәрмен анық естілмеді. Қайта айтыңыз немесе мәтінмен жазыңыз.', true);
       } catch (error) { toast(error.message, true); }
-      finally { stopPolling(); state.nativeListening = false; setListening(false); configureVoice(); }
+      finally {
+        stopPolling(); state.nativeListening = false; setListening(false); configureVoice();
+        await syncWakeActivity(true);
+        if (state.settings.wake_enabled && !state.closing) {
+          try { applyWakeStatus(await post('/api/wake/start', { language: state.settings.wake_language })); }
+          catch (error) { toast(`Шақыруды қайта қосу мүмкін болмады: ${error.message}`, true); }
+        }
+      }
       return;
     }
+    stopSpeech();
     if (!state.recognition) return;
     if (state.listening) { state.recognition.stop(); return; }
     try { state.recognition.lang = state.language; state.recognition.start(); }
@@ -352,6 +383,8 @@
       $('#sidebar-online').classList.remove('connected');
     }
     configureVoice();
+    renderWakeStatus();
+    if (state.health?.desktop_mode && !state.wakePollRunning && !state.wakePollTimer) pollWakeStatus();
   }
 
   function renderEngineStatus() {
@@ -366,9 +399,10 @@
     $('#edge-voice-field').hidden = provider !== 'edge';
     $('#elevenlabs-fields').hidden = provider !== 'elevenlabs';
     $('#system-voice-note').hidden = provider !== 'system';
+    $('#voice-tuning').hidden = provider !== 'edge';
   }
   function acceptSettings(settings) {
-    const fields = ['llm_enabled', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model'];
+    const fields = ['llm_enabled', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model', 'speech_style', 'speech_rate', 'speech_pitch', 'wake_enabled', 'wake_language'];
     for (const field of fields) if (Object.hasOwn(settings, field)) state.settings[field] = settings[field];
     $('#llm-enabled').checked = Boolean(state.settings.llm_enabled);
     $('#llm-model').value = state.settings.llm_model || 'gpt-4.1-mini';
@@ -376,6 +410,11 @@
     $('#tts-voice').value = state.settings.tts_voice || 'kk-KZ-DauletNeural';
     $('#elevenlabs-voice-id').value = state.settings.elevenlabs_voice_id || '';
     $('#elevenlabs-model').value = state.settings.elevenlabs_model || 'eleven_v3';
+    $('#speech-style').value = state.settings.speech_style || 'serious';
+    $('#speech-rate').value = String(state.settings.speech_rate ?? -8);
+    $('#speech-pitch').value = String(state.settings.speech_pitch ?? -8);
+    $('#wake-enabled').checked = Boolean(state.settings.wake_enabled);
+    $('#wake-language').value = state.settings.wake_language || 'kk-KZ';
     $('#llm-key-status').textContent = state.settings.llm_configured ? 'кілт сақталған' : 'қосылмаған';
     $('#elevenlabs-key-status').textContent = state.settings.elevenlabs_configured ? 'кілт сақталған' : 'қосылмаған';
     $('#clear-llm-key').checked = false;
@@ -383,7 +422,7 @@
     $('#clear-llm-key').disabled = !state.settings.llm_configured;
     $('#clear-elevenlabs-key').disabled = !state.settings.elevenlabs_configured;
     $('#settings-status').textContent = state.settings.llm_enabled && state.settings.llm_configured ? 'GPT қосылған' : 'Негізгі пәрмендер дайын';
-    updateProviderFields(); renderEngineStatus();
+    updateProviderFields(); renderEngineStatus(); renderWakeStatus();
   }
   async function loadSettings() { acceptSettings(await api('/api/settings')); }
   async function saveSettings() {
@@ -396,14 +435,136 @@
       elevenlabs_model: $('#elevenlabs-model').value.trim() || 'eleven_v3',
       llm_api_key: $('#llm-api-key').value.trim(), elevenlabs_api_key: $('#elevenlabs-api-key').value.trim(),
       clear_llm_api_key: $('#clear-llm-key').checked, clear_elevenlabs_api_key: $('#clear-elevenlabs-key').checked,
+      speech_style: $('#speech-style').value, speech_rate: Number($('#speech-rate').value), speech_pitch: Number($('#speech-pitch').value),
+      wake_enabled: $('#wake-enabled').checked, wake_language: $('#wake-language').value,
     };
     try {
       if ((body.clear_llm_api_key && body.llm_api_key) || (body.clear_elevenlabs_api_key && body.elevenlabs_api_key)) throw new Error('Кілтті жою немесе жаңарту әрекетінің бірін таңдаңыз.');
+      if (!Number.isInteger(body.speech_rate) || body.speech_rate < -30 || body.speech_rate > 20 || !Number.isInteger(body.speech_pitch) || body.speech_pitch < -20 || body.speech_pitch > 10) throw new Error('Дауыс жылдамдығы −30…20, үн биіктігі −20…10 аралығында болуы керек.');
       const settings = await post('/api/settings', body);
       stopSpeech(); acceptSettings(settings);
       $('#llm-api-key').value = ''; $('#elevenlabs-api-key').value = '';
       result.textContent = 'Баптаулар сақталды. Таңдалған дауысты тексеріп көріңіз.';
+      if (state.health?.desktop_mode) pollWakeStatus();
     } catch (error) { result.classList.add('error'); result.textContent = error.message; throw error; }
+  }
+
+  function wakeBusy() { return Boolean(state.commandBusy || state.speechBusy || state.nativeListening || state.listening); }
+  function wakeCommandCapture(status = state.wakeStatus) { return status?.phase === 'command' || (status?.phase === 'calibrating' && status?.voice_phase === 'calibrating') || status?.phase === 'recognizing'; }
+  function setSpeechBusy(busy) { state.speechBusy = busy; syncWakeActivity(!busy); }
+  function syncWakeActivity(force = false) {
+    if (!state.health?.desktop_mode || state.closing) return Promise.resolve(true);
+    if (force) state.wakeActivityForce = true;
+    if (state.wakeActivityPromise) return state.wakeActivityPromise;
+    if (!state.wakeActivityForce && state.wakeActivityLast === wakeBusy()) return Promise.resolve(true);
+    state.wakeActivityPromise = (async () => {
+      while (!state.closing && (state.wakeActivityForce || state.wakeActivityLast !== wakeBusy())) {
+        const busy = wakeBusy();
+        state.wakeActivityForce = false;
+        try { await post('/api/wake/activity', { busy }, { timeout: 6000 }); state.wakeActivityLast = busy; }
+        catch { state.wakeActivityLast = null; return false; }
+      }
+      return true;
+    })().finally(() => { state.wakeActivityPromise = null; });
+    return state.wakeActivityPromise;
+  }
+  function renderWakeStatus() {
+    const desktop = Boolean(state.health?.desktop_mode);
+    const status = state.wakeStatus;
+    const phase = status?.phase;
+    const enabled = Boolean(desktop && status?.enabled);
+    const capturing = enabled && phase === 'command' && status.voice_phase === 'listening';
+    const waiting = enabled && phase === 'waiting' && status.model_ready && !status.error;
+    let title = '«Аян» деп шақыру';
+    let description = desktop ? 'Шақыру күйі тексерілуде…' : 'Тұрақты шақыру үшін Windows қолданбасын ашыңыз. Браузерде микрофон батырмасын қолданыңыз.';
+    if (desktop && status) {
+      if (status.error) { title = 'Шақыру қолжетімсіз'; description = String(status.error); }
+      else if (!status.model_ready) { title = 'Шақыру моделі қажет'; description = 'Жергілікті модельді орнатыңыз. Орнатылмайынша тұрақты тыңдау басталмайды.'; }
+      else if (!enabled) { title = 'Шақыру өшірулі'; description = 'Қаласаңыз қосыңыз. Микрофон батырмасы бөлек жұмыс істейді.'; }
+      else if (capturing) { title = 'Айтыңыз, тыңдап тұрмын…'; description = 'Қысқа пәрменіңіз Google дауыс тану қызметіне жіберіледі.'; }
+      else if (wakeCommandCapture(status)) {
+        title = status.voice_phase === 'recognizing' ? 'Пәрмен танылуда…' : 'Аян естілді. Микрофон дайындалуда…';
+        description = status.voice_phase === 'calibrating' ? '1 секунд үнсіз күтіңіз. «Айтыңыз» белгісінен кейін сөйлеңіз.' : 'Дауыс қабылданғаннан кейін пәрмен орындалады.';
+      } else if (waiting) { title = '«Аян» деп шақырыңыз'; description = 'Шақыру жергілікті танылады. Қарапайым әңгіме пәрменге айналмайды.'; }
+      else { title = 'Шақыру уақытша үзілісте'; description = 'Көмекші жауабы немесе ағымдағы пәрмен аяқталған соң жалғасады.'; }
+    }
+    if (state.wakeInstalling) { title = 'Шақыру моделі орнатылуда…'; description = 'Жүктеу бірнеше минут алуы мүмкін. Орнату біткенше күтіңіз.'; }
+    $('#wake-status').textContent = title;
+    $('#wake-description').textContent = description;
+    $('#wake-settings-status').textContent = `${title} ${status?.error ? description : ''}`;
+    $('#wake-indicator').classList.toggle('active', waiting);
+    $('#wake-indicator').classList.toggle('capturing', capturing);
+    const wantsStop = enabled || (state.wakeInstalling && state.settings.wake_enabled);
+    for (const button of [$('#wake-toggle'), $('#wake-settings-toggle')]) {
+      button.textContent = wantsStop ? 'Шақыруды тоқтату' : 'Шақыруды қосу';
+      button.disabled = !desktop || state.wakeChanging || (state.nativeListening && !enabled);
+    }
+    $('#wake-install').hidden = !desktop || Boolean(status?.model_ready);
+    $('#wake-install').disabled = state.wakeInstalling;
+    $('#wake-install').textContent = state.wakeInstalling ? 'Орнатылуда…' : 'Шақыру моделін орнату';
+    if (enabled && wakeCommandCapture(status) && !state.nativeListening && !state.commandBusy && !state.speechBusy) {
+      setAssistantState(title);
+      $('#voice-notice').textContent = capturing ? title : description;
+    }
+  }
+  function applyWakeStatus(status) {
+    if (!status || typeof status.phase !== 'string') return;
+    const wasCommandCapture = wakeCommandCapture();
+    state.wakeStatus = status; renderWakeStatus();
+    if (wasCommandCapture && !wakeCommandCapture(status) && !state.nativeListening && !state.commandBusy) {
+      setAssistantState('Пәрменіңізді күтіп тұрмын'); configureVoice();
+    }
+  }
+  async function pollWakeStatus() {
+    if (!state.health?.desktop_mode || state.closing || state.wakePollRunning) return;
+    clearTimeout(state.wakePollTimer); state.wakePollTimer = null; state.wakePollRunning = true;
+    try {
+      const status = await api(`/api/wake/status?since=${encodeURIComponent(state.wakeCursor)}`, { timeout: 7000 });
+      if (state.closing) return;
+      applyWakeStatus(status);
+      const events = Array.isArray(status.events) ? status.events : [];
+      const dispatch = state.wakePrimed;
+      state.wakePrimed = true;
+      for (const event of [...events].sort((a, b) => Number(a.id) - Number(b.id))) {
+        const id = Number(event.id);
+        if (!Number.isSafeInteger(id) || id <= state.wakeCursor) continue;
+        state.wakeCursor = id;
+        if (state.wakeSeen.has(id)) continue;
+        state.wakeSeen.add(id);
+        if (!dispatch) continue;
+        if (event.type === 'wake') { stopSpeech(); applyWakeStatus(status); }
+        else if (event.type === 'command' && String(event.text || '').trim()) {
+          if (state.commandBusy || state.nativeListening) { toast('Ағымдағы пәрмен аяқталған соң қайта шақырыңыз.'); await syncWakeActivity(true); continue; }
+          await handleCommand(String(event.text).trim());
+        } else if (event.type === 'error') { toast(String(event.text || 'Шақыру пәрмені танылмады.'), true); await syncWakeActivity(true); }
+      }
+      if (state.wakeSeen.size > 300) state.wakeSeen = new Set([...state.wakeSeen].slice(-150));
+      await syncWakeActivity();
+    } catch (error) {
+      if (!state.closing) { state.wakeStatus = { enabled: false, phase: 'error', model_ready: state.wakeStatus?.model_ready || false, error: error.message }; renderWakeStatus(); }
+    } finally {
+      state.wakePollRunning = false;
+      if (!state.closing && state.health?.desktop_mode) state.wakePollTimer = setTimeout(pollWakeStatus, 1000);
+    }
+  }
+  async function toggleWake() {
+    if (!state.health?.desktop_mode || state.wakeChanging) return;
+    state.wakeChanging = true;
+    const enabled = !(state.wakeStatus?.enabled || (state.wakeInstalling && state.settings.wake_enabled));
+    renderWakeStatus();
+    try {
+      acceptSettings(await post('/api/settings', { wake_enabled: enabled, wake_language: state.settings.wake_language }));
+      applyWakeStatus(await post(enabled ? '/api/wake/start' : '/api/wake/stop', enabled ? { language: state.settings.wake_language } : {}));
+      if (enabled) await syncWakeActivity(true);
+    } catch (error) { toast(error.message, true); }
+    finally { state.wakeChanging = false; renderWakeStatus(); }
+  }
+  async function installWakeModel() {
+    if (!state.health?.desktop_mode || state.wakeInstalling) return;
+    state.wakeInstalling = true; renderWakeStatus();
+    try { applyWakeStatus(await post('/api/wake/model/install', {}, { timeout: 180000 })); }
+    catch (error) { toast(error.message, true); }
+    finally { state.wakeInstalling = false; renderWakeStatus(); }
   }
 
   function youtubeSearchLink(query) { return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`; }
@@ -414,6 +575,123 @@
     link.target = '_blank'; link.rel = 'noopener noreferrer';
     link.textContent = 'YouTube-та іздеу нәтижелерін ашу ↗';
     container.append(link);
+  }
+  function newSessionId() {
+    if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    if (typeof crypto.getRandomValues === 'function') return Array.from(crypto.getRandomValues(new Uint8Array(16)), (value) => value.toString(16).padStart(2, '0')).join('');
+    return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+  }
+  function prepareListenSession(track, restart = false) {
+    const previous = state.listenSession;
+    if (!restart && previous && previous.video_id === track.id && !previous.ended) return previous;
+    if (previous) recordListen(previous, true);
+    state.listenSession = { session_id: newSessionId(), video_id: track.id, title: Array.from(String(track.title || 'YouTube бейнесі')).slice(0, 300).join(''), channel: Array.from(String(track.channel || 'YouTube')).slice(0, 200).join(''), seconds: 0, sentSeconds: 0, lastPosition: null, lastTickAt: null, pending: false, flushRequested: false, lastAttemptAt: -Infinity, ended: false };
+    return state.listenSession;
+  }
+  function resetListeningBaseline() {
+    if (state.listenSession) { state.listenSession.lastPosition = null; state.listenSession.lastTickAt = null; }
+  }
+  function sampleListening() {
+    const session = state.listenSession;
+    if (!session || !state.playerReady || !state.playing || session.ended) { resetListeningBaseline(); return; }
+    let position;
+    try {
+      if (typeof state.player.getPlayerState === 'function' && state.player.getPlayerState() !== YT.PlayerState.PLAYING) { resetListeningBaseline(); return; }
+      const videoId = state.player.getVideoData?.()?.video_id;
+      if (videoId && videoId !== session.video_id) { resetListeningBaseline(); return; }
+      position = Number(state.player.getCurrentTime?.());
+    } catch { resetListeningBaseline(); return; }
+    if (!Number.isFinite(position) || position < 0) { resetListeningBaseline(); return; }
+    const now = performance.now();
+    if (session.lastPosition !== null && session.lastTickAt !== null) {
+      const delta = position - session.lastPosition;
+      const elapsed = (now - session.lastTickAt) / 1000;
+      // A seek, buffering gap, or a throttled tab must not turn into listening time.
+      if (elapsed > 0 && elapsed <= 3 && delta > 0 && delta <= Math.min(3, elapsed * 1.5 + 0.25)) session.seconds += Math.min(delta, elapsed);
+    }
+    session.lastPosition = position; session.lastTickAt = now;
+    recordListen(session);
+  }
+  async function recordListen(session, force = false, keepalive = false) {
+    const seconds = Math.floor(session.seconds);
+    if (seconds < 30 || seconds <= session.sentSeconds || (!force && seconds - session.sentSeconds < 30)) return;
+    if (session.pending) { if (force) session.flushRequested = true; return; }
+    if (!force && performance.now() - session.lastAttemptAt < 5000) return;
+    session.pending = true; session.lastAttemptAt = performance.now();
+    try {
+      await post('/api/music/listens', { video_id: session.video_id, title: session.title, channel: session.channel, session_id: session.session_id, listened_seconds: seconds }, { keepalive, timeout: 12000 });
+      session.sentSeconds = Math.max(session.sentSeconds, seconds);
+      if (!state.closing) await loadPlaylist();
+    } catch { if (!state.closing) $('#playlist-notice').textContent = 'Тыңдалым есебін сақтау мүмкін болмады. Тыңдауды жалғастырсаңыз, қайта сақтап көремін.'; }
+    finally {
+      session.pending = false;
+      if (session.flushRequested) { session.flushRequested = false; recordListen(session, true, keepalive); }
+    }
+  }
+  function renderPlaylist() {
+    const container = $('#playlist-tracks'); container.replaceChildren();
+    $('#playlist-count').textContent = `${state.playlist.length} ән`;
+    $('#playlist-play').disabled = !state.playlist.length;
+    $('#playlist-next').disabled = !state.playlistQueueActive || state.playlistQueueIndex + 1 >= state.playlistQueue.length;
+    if (!state.playlist.length) {
+      const empty = document.createElement('div'); empty.className = 'empty-state';
+      const text = document.createElement('p'); text.textContent = 'Әзірге бос. Әнді кемінде 30 секунд тыңдаңыз — плейлист өзі жиналады.';
+      empty.append(text); container.append(empty); return;
+    }
+    for (const track of state.playlist) {
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'track-result';
+      button.classList.toggle('active', state.currentTrack?.id === track.id);
+      const image = document.createElement('img'); image.alt = ''; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
+      image.src = `https://i.ytimg.com/vi/${encodeURIComponent(track.id)}/default.jpg`;
+      const details = document.createElement('span');
+      const title = document.createElement('strong'); title.textContent = track.title || 'YouTube бейнесі';
+      const channel = document.createElement('small'); channel.textContent = track.channel || 'YouTube';
+      const count = document.createElement('span'); count.className = 'play-count'; count.textContent = `${Number(track.play_count) || 0} рет`;
+      details.append(title, channel); button.append(image, details, count, icons('play'));
+      button.addEventListener('click', () => selectTrack(track).catch((error) => toast(error.message, true)));
+      container.append(button);
+    }
+  }
+  async function loadPlaylist() {
+    const result = await api('/api/music/playlist', { timeout: 12000 });
+    state.playlist = (Array.isArray(result.tracks) ? result.tracks : []).filter((track) => /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')));
+    renderPlaylist();
+  }
+  async function playPlaylist() {
+    if (!state.playlist.length) await loadPlaylist();
+    if (!state.playlist.length) throw new Error('Жиі тыңдалатын әндер тізімі әзірге бос. Алдымен әнді кемінде 30 секунд тыңдаңыз.');
+    state.playlistQueue = [...state.playlist]; state.playlistQueueIndex = 0; state.playlistQueueActive = true;
+    showView('music');
+    try { await selectTrack(state.playlistQueue[0], { fromQueue: true }); }
+    catch (error) { state.playlistQueueActive = false; renderPlaylist(); throw error; }
+    $('#playlist-notice').textContent = `Плейлист: 1/${state.playlistQueue.length}. Келесі ән алдыңғысы аяқталған соң қосылады.`;
+    renderPlaylist();
+    return 'Жиі тыңдалатын әндер плейлисті таңдалды. Музыка басталмаса, ойнату батырмасын басыңыз.';
+  }
+  async function nextPlaylistTrack() {
+    if (!state.playlistQueueActive || state.playlistQueueIndex + 1 >= state.playlistQueue.length) throw new Error('Плейлистте келесі ән жоқ.');
+    state.playlistQueueIndex += 1;
+    try { await selectTrack(state.playlistQueue[state.playlistQueueIndex], { fromQueue: true }); }
+    catch (error) { state.playlistQueueActive = false; renderPlaylist(); throw error; }
+    $('#playlist-notice').textContent = `Плейлист: ${state.playlistQueueIndex + 1}/${state.playlistQueue.length}.`;
+    renderPlaylist();
+    return 'Плейлисттегі келесі ән таңдалды.';
+  }
+  function handleMusicState(event) {
+    const playing = event.data === YT.PlayerState.PLAYING;
+    if (!playing && state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
+    updatePlayback(playing);
+    if (playing) {
+      if (state.currentTrack) prepareListenSession(state.currentTrack);
+      sampleListening();
+      $('#music-notice').textContent = 'Ойнап жатыр. Дыбыс деңгейін өзгерте аласыз.';
+    }
+    if (event.data === YT.PlayerState.ENDED) {
+      if (state.listenSession) state.listenSession.ended = true;
+      $('#music-notice').textContent = 'Әуен аяқталды. Басқа әнді таңдаңыз.';
+      if (state.playlistQueueActive && state.playlistQueueIndex + 1 < state.playlistQueue.length) nextPlaylistTrack().catch((error) => toast(error.message, true));
+      else if (state.playlistQueueActive) { state.playlistQueueActive = false; $('#playlist-notice').textContent = 'Плейлист аяқталды.'; renderPlaylist(); }
+    }
   }
   async function searchMusic(query, autoSelect = false, strict = false) {
     query = String(query || '').trim();
@@ -496,8 +774,12 @@
     $('#play-toggle').disabled = true;
     updatePlayback(false);
   }
-  async function selectTrack(track) {
+  async function selectTrack(track, { fromQueue = false } = {}) {
+    if (!/^[A-Za-z0-9_-]{11}$/.test(String(track?.id || ''))) throw new Error('YouTube бейне идентификаторы жарамсыз.');
+    if (!fromQueue) { state.playlistQueueActive = false; state.playlistQueueIndex = -1; }
+    prepareListenSession(track, true); resetListeningBaseline(); updatePlayback(false);
     state.currentTrack = track;
+    renderPlaylist();
     $('#track-title').textContent = track.title || 'YouTube бейнесі';
     $('#track-channel').textContent = track.channel || 'YouTube';
     $('#youtube-link').href = `https://www.youtube.com/watch?v=${encodeURIComponent(track.id)}`;
@@ -517,17 +799,15 @@
             playerVars: { playsinline: 1, rel: 0, autoplay: 0, origin: window.location.origin },
             events: {
               onReady: () => { if (state.player !== initializingPlayer) return; clearTimeout(timer); state.playerReady = true; state.player.setVolume(state.volume); $('#play-toggle').disabled = false; if (state.currentTrack?.id !== track.id) state.player.loadVideoById(state.currentTrack.id); else state.player.playVideo(); resolve(); },
-              onStateChange: (event) => {
-                updatePlayback(event.data === YT.PlayerState.PLAYING);
-                if (event.data === YT.PlayerState.PLAYING) $('#music-notice').textContent = 'Ойнап жатыр. Дыбыс деңгейін өзгерте аласыз.';
-                if (event.data === YT.PlayerState.ENDED) $('#music-notice').textContent = 'Әуен аяқталды. Басқа әнді таңдаңыз.';
-              },
+              onStateChange: handleMusicState,
               onError: () => {
                 const errorMessage = 'Бұл бейнені осы ойнатқышта ашу мүмкін болмады. YouTube-та ашу сілтемесін пайдаланыңыз.';
                 updatePlayback(false); $('#music-notice').textContent = errorMessage;
+                if (state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
+                state.playlistQueueActive = false; renderPlaylist();
                 if (!state.playerReady) { clearTimeout(timer); reject(new Error(errorMessage)); }
               },
-              onAutoplayBlocked: () => { $('#music-notice').textContent = 'Ойнату батырмасын басыңыз: автоматты ойнатуға рұқсат берілмеді.'; },
+              onAutoplayBlocked: () => { updatePlayback(false); resetListeningBaseline(); $('#music-notice').textContent = 'Ойнату батырмасын басыңыз: автоматты ойнатуға рұқсат берілмеді.'; },
             },
           });
           state.player = initializingPlayer;
@@ -696,6 +976,10 @@
         showView('music');
         if (inPlan && payload.action !== 'volume' && !state.playerReady) throw new Error('Алдымен әнді таңдап, ойнатқыштың дайын болғанын күтіңіз.');
         return controlMusic(payload);
+      case 'music_playlist':
+        showView('music'); await loadPlaylist();
+        if (payload.action === 'show') return state.playlist.length ? `Жиі тыңдалған ${state.playlist.length} ән көрсетілді.` : 'Жиі тыңдалатын әндер тізімі әзірге бос. Әнді кемінде 30 секунд тыңдаңыз.';
+        return playPlaylist();
       case 'browser_open':
         showView('browser'); return browserAction({ action: 'open', url: payload.url }, inPlan);
       case 'browser_action':
@@ -716,7 +1000,7 @@
   }
   async function executePlan(result) {
     const actions = result.payload?.actions;
-    const allowed = ['music_search', 'music_control', 'browser_open', 'browser_action', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
+    const allowed = ['music_search', 'music_control', 'music_playlist', 'browser_open', 'browser_action', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
     if (!Array.isArray(actions) || !actions.length || actions.length > 6) throw new Error('Жоспарда 1–6 қадам болуы керек. Сұрағыңызды шағын бөліктерге бөліңіз.');
     if (actions.some((action) => !action || !allowed.includes(action.intent) || !action.payload || typeof action.payload !== 'object' || Array.isArray(action.payload))) throw new Error('Жоспар қадамының пішімі жарамсыз. Қайта сұрап көріңіз.');
     for (let index = 0; index < actions.length; index += 1) {
@@ -741,12 +1025,13 @@
     message(text, 'user'); $('#command-input').value = '';
     setAssistantState('Ойыңызды әрекетке айналдырамын…');
     try {
+      await syncWakeActivity();
       const result = await post('/api/command', { text, volume: state.volume, language: state.language, history });
       state.lastEngine = result.engine || null; renderEngineStatus();
       const reply = result.intent === 'plan' ? await executePlan(result) : await executeIntent(result.intent, result.payload || {}, result.message || 'Пәрмен қабылданды.');
       message(reply);
     } catch (error) { message(error.message, 'assistant', true); }
-    finally { state.commandBusy = false; send.disabled = false; setAssistantState(state.listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын'); }
+    finally { state.commandBusy = false; send.disabled = false; setAssistantState(state.listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын'); await syncWakeActivity(true); }
   }
   async function withFormBusy(form, operation) {
     const button = form.querySelector('button[type="submit"]');
@@ -789,6 +1074,15 @@
     else if (state.lastSpeechText) speak(state.lastSpeechText, state.lastSpeechLanguage);
   });
   $('#tts-provider').addEventListener('change', updateProviderFields);
+  $('#speech-style').addEventListener('change', (event) => {
+    const serious = event.target.value === 'serious';
+    $('#speech-rate').value = serious ? '-8' : '0';
+    $('#speech-pitch').value = serious ? '-8' : '0';
+    if (serious) $('#tts-voice').value = 'kk-KZ-DauletNeural';
+  });
+  $('#wake-toggle').addEventListener('click', toggleWake);
+  $('#wake-settings-toggle').addEventListener('click', toggleWake);
+  $('#wake-install').addEventListener('click', installWakeModel);
   $('#settings-form').addEventListener('submit', (event) => {
     event.preventDefault(); withFormBusy(event.currentTarget, saveSettings);
   });
@@ -800,6 +1094,9 @@
     event.preventDefault(); withFormBusy(event.currentTarget, () => searchMusic($('#music-query').value));
   });
   $('#play-toggle').addEventListener('click', () => controlMusic({ action: state.playing ? 'pause' : 'play' }));
+  $('#playlist-play').addEventListener('click', () => playPlaylist().catch((error) => toast(error.message, true)));
+  $('#playlist-next').addEventListener('click', () => nextPlaylistTrack().catch((error) => toast(error.message, true)));
+  $('#playlist-refresh').addEventListener('click', () => loadPlaylist().catch((error) => toast(error.message, true)));
   $('#volume-slider').addEventListener('input', (event) => setVolume(event.target.value));
   $('#browser-open-form').addEventListener('submit', (event) => {
     event.preventDefault(); withFormBusy(event.currentTarget, async () => {
@@ -839,6 +1136,8 @@
   state.settingsPromise = loadSettings();
   state.settingsPromise.catch(() => { $('#settings-status').textContent = 'Баптаулар жүктелмеді'; });
   checkHealth();
+  loadPlaylist().catch(() => { $('#playlist-notice').textContent = 'Сақталған плейлистті жүктеу мүмкін болмады. Жаңарту батырмасын басып көріңіз.'; });
+  setInterval(sampleListening, 1000);
   Promise.allSettled([loadDiary(), loadReminders()]).then((results) => {
     if (results.some((result) => result.status === 'rejected')) toast('Жазбаларды жүктеу мүмкін болмады. Бағдарламамен байланысты тексеріңіз.', true);
   });
@@ -847,6 +1146,8 @@
   }, 15000);
   setInterval(checkHealth, 60000);
   window.addEventListener('beforeunload', () => {
+    state.closing = true; clearTimeout(state.wakePollTimer);
+    if (state.listenSession) recordListen(state.listenSession, true, true);
     if (state.recognition && state.listening) state.recognition.abort();
     stopSpeech();
     $('#llm-api-key').value = ''; $('#elevenlabs-api-key').value = '';

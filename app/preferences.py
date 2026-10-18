@@ -18,6 +18,11 @@ DEFAULTS = {
     "tts_voice": "kk-KZ-DauletNeural",
     "elevenlabs_voice_id": "",
     "elevenlabs_model": "eleven_v3",
+    "speech_style": "serious",
+    "speech_rate": -8,
+    "speech_pitch": -8,
+    "wake_enabled": True,
+    "wake_language": "kk-KZ",
 }
 SECRET_ENV = {
     "llm_api_key": ("AYAN_LLM_API_KEY", "OPENAI_API_KEY"),
@@ -117,6 +122,14 @@ class Preferences:
             raise SettingsError("ElevenLabs voice ID дұрыс емес.")
         if settings["elevenlabs_model"] not in {"eleven_v3", "eleven_multilingual_v2"}:
             raise SettingsError("ElevenLabs моделінің атауы дұрыс емес.")
+        if settings["speech_style"] not in {"serious", "natural"}:
+            raise SettingsError("Дауыс мәнерін таңдаңыз.")
+        if type(settings["speech_rate"]) is not int or not -30 <= settings["speech_rate"] <= 20:
+            raise SettingsError("Сөйлеу жылдамдығы -30 бен 20 аралығында болуы керек.")
+        if type(settings["speech_pitch"]) is not int or not -20 <= settings["speech_pitch"] <= 10:
+            raise SettingsError("Дауыс биіктігі -20 мен 10 аралығында болуы керек.")
+        if type(settings["wake_enabled"]) is not bool or settings["wake_language"] not in {"kk-KZ", "ru-RU"}:
+            raise SettingsError("«Аян» режимінің баптауы дұрыс емес.")
 
     def update(self, updates: dict) -> dict:
         allowed = set(DEFAULTS) | set(SECRET_ENV) | {"clear_llm_api_key", "clear_elevenlabs_api_key"}

@@ -5,3 +5,4 @@ yt-dlp==2026.8.19
 SpeechRecognition==3.17.0
 httpx==0.28.1
 edge-tts==7.3.1
+vosk==0.3.45

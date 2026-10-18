@@ -57,6 +57,8 @@ async def test_default_kazakh_voice_stream(edge_mock):
     audio = await SpeechService(FakePreferences()).synthesize("Сәлем!", "kk-KZ")
     assert audio == b"ID3mp3"
     assert calls[0][1]["voice"] == "kk-KZ-DauletNeural"
+    assert calls[0][1]["rate"] == "-8%"
+    assert calls[0][1]["pitch"] == "-8Hz"
     assert calls[0][1]["connect_timeout"] == 10
     assert calls[0][1]["receive_timeout"] == 20
     trust.load_default_certs.assert_called_once()
@@ -163,6 +165,82 @@ async def test_audio_cache_is_bounded_and_expires(monkeypatch):
     assert service._edge.await_count == 20
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("settings", "rate", "pitch"), [
+    ({"speech_style": "natural"}, "+0%", "+0Hz"),
+    ({"speech_style": "serious", "speech_rate": -30, "speech_pitch": -20}, "-30%", "-20Hz"),
+    ({"speech_style": "serious", "speech_rate": 20, "speech_pitch": 10}, "+20%", "+10Hz"),
+    ({"speech_style": "natural", "speech_rate": -12, "speech_pitch": 4}, "-12%", "+4Hz"),
+])
+async def test_edge_uses_selected_style_and_valid_prosody_bounds(edge_mock, settings, rate, pitch):
+    await SpeechService(FakePreferences(settings)).synthesize("Дауыс мәнерін тексеру")
+    assert edge_mock[1][0][1]["rate"] == rate
+    assert edge_mock[1][0][1]["pitch"] == pitch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("name", "value"), [
+    ("speech_style", "angry"), ("speech_style", None),
+    ("speech_style", []), ("speech_style", {}),
+    ("speech_rate", -31), ("speech_rate", 21), ("speech_rate", True),
+    ("speech_rate", -8.5), ("speech_rate", "-8"), ("speech_rate", None),
+    ("speech_pitch", -21), ("speech_pitch", 11), ("speech_pitch", False),
+    ("speech_pitch", -8.5), ("speech_pitch", "-8"), ("speech_pitch", None),
+])
+async def test_invalid_prosody_fails_before_provider_request(edge_mock, name, value):
+    service = SpeechService(FakePreferences({name: value}))
+    with pytest.raises(SpeechError):
+        await service.synthesize("Сәлем")
+    assert edge_mock[1] == []
+    assert not service._cache
+
+
+@pytest.mark.asyncio
+async def test_audio_cache_distinguishes_style_rate_and_pitch():
+    preferences = FakePreferences()
+    service = SpeechService(preferences)
+    service._edge = AsyncMock(side_effect=[b"default", b"slower", b"lower", b"natural"])
+    assert await service.synthesize("Бірдей мәтін") == b"default"
+    assert await service.synthesize("Бірдей мәтін") == b"default"
+    preferences.values["speech_rate"] = -15
+    assert await service.synthesize("Бірдей мәтін") == b"slower"
+    preferences.values["speech_pitch"] = -12
+    assert await service.synthesize("Бірдей мәтін") == b"lower"
+    preferences.values["speech_style"] = "natural"
+    assert await service.synthesize("Бірдей мәтін") == b"natural"
+    preferences.values.clear()
+    assert await service.synthesize("Бірдей мәтін") == b"default"
+    assert service._edge.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_queued_synthesis_keeps_cache_and_provider_prosody_consistent():
+    preferences = FakePreferences()
+    service = SpeechService(preferences)
+    calls = []
+
+    async def synthesize_with_snapshot(text, voice, *, prosody=None):
+        calls.append(prosody)
+        return str(prosody).encode()
+
+    service._edge = synthesize_with_snapshot
+    await service._lock.acquire()
+    pending = asyncio.create_task(service.synthesize("Бірдей мәтін"))
+    try:
+        # The pending request captures its settings, then waits for the provider lock.
+        await asyncio.sleep(0)
+        preferences.values.update(speech_style="natural", speech_rate=15, speech_pitch=5)
+    finally:
+        service._lock.release()
+    old_audio = await pending
+    assert calls == [("serious", -8, -8)]
+    assert old_audio == str(("serious", -8, -8)).encode()
+    assert await service.synthesize("Бірдей мәтін") == str(("natural", 15, 5)).encode()
+    preferences.values.clear()
+    assert await service.synthesize("Бірдей мәтін") == old_audio
+    assert calls == [("serious", -8, -8), ("natural", 15, 5)]
+
+
 def eleven_preferences(**values):
     return FakePreferences(
         {"tts_provider": "elevenlabs", "elevenlabs_voice_id": "A" * 20, **values},
@@ -206,7 +284,12 @@ async def test_elevenlabs_checks_metadata_before_audio(eleven_http):
     assert [request.method for request in requests] == ["GET", "POST"]
     assert requests[1].url.host == "api.elevenlabs.io"
     assert requests[1].headers["xi-api-key"] == "test-only-secret"
-    assert json.loads(requests[1].content) == {"text": "Сәлем", "model_id": "eleven_v3"}
+    assert json.loads(requests[1].content) == {
+        "text": "Сәлем", "model_id": "eleven_v3", "voice_settings": {
+            "stability": 0.5, "similarity_boost": 0.85, "style": 0.15,
+            "use_speaker_boost": True, "speed": 0.92,
+        },
+    }
     assert options[0]["verify"].verify_mode == ssl.CERT_REQUIRED
     assert options[0]["verify"].check_hostname is True
     assert options[0]["follow_redirects"] is False
@@ -243,6 +326,37 @@ async def test_multilingual_v2_russian_can_be_confirmed(eleven_http):
                                 "languages": [{"language_id": "ru"}]}]
     service = SpeechService(eleven_preferences(elevenlabs_model="eleven_multilingual_v2"))
     assert await service.synthesize("Привет", "ru-RU") == b"ID3eleven"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("model", "style", "rate", "stability", "style_amount"), [
+    ("eleven_v3", "serious", -30, 0.5, 0.15),
+    ("eleven_v3", "natural", 20, 0.5, 0.3),
+    ("eleven_multilingual_v2", "serious", -8, 0.7, 0.15),
+    ("eleven_multilingual_v2", "natural", 0, 0.5, 0.3),
+])
+async def test_elevenlabs_receives_supported_voice_settings(eleven_http, model, style, rate, stability, style_amount):
+    eleven_http[0]["models"] = [{
+        "model_id": model, "can_do_text_to_speech": True,
+        "languages": [{"language_id": "ru"}],
+    }]
+    service = SpeechService(eleven_preferences(
+        elevenlabs_model=model, speech_style=style, speech_rate=rate,
+    ))
+    await service.synthesize("Говорите спокойно", "ru-RU")
+    body = json.loads(eleven_http[1][-1].content)
+    settings = body["voice_settings"]
+    assert settings == {
+        "stability": stability, "similarity_boost": 0.85, "style": style_amount,
+        "use_speaker_boost": True, "speed": pytest.approx(1 + rate / 100),
+    }
+
+
+@pytest.mark.asyncio
+async def test_invalid_prosody_never_spends_elevenlabs_credits(eleven_http):
+    with pytest.raises(SpeechError):
+        await SpeechService(eleven_preferences(speech_pitch=11)).synthesize("Сәлем")
+    assert eleven_http[1] == []
 
 
 @pytest.mark.asyncio

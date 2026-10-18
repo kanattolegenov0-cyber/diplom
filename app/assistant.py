@@ -13,7 +13,7 @@ from typing import Annotated, Literal, Union
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
-from .commands import MAX_REMINDER_DELAY, normalize_public_url, parse_command
+from .commands import MAX_REMINDER_DELAY, mentions_playlist, normalize_public_url, parse_command
 
 
 _API_URL = "https://api.openai.com/v1/chat/completions"
@@ -41,6 +41,10 @@ class _PlayPause(_BoundedModel):
 class _Volume(_BoundedModel):
     action: Literal["volume"]
     volume: int = Field(ge=0, le=100)
+
+
+class _Playlist(_BoundedModel):
+    action: Literal["play", "show"]
 
 
 class _Url(_BoundedModel):
@@ -94,6 +98,11 @@ class _MusicControlAction(_BoundedModel):
     payload: Annotated[Union[_PlayPause, _Volume], Field(discriminator="action")]
 
 
+class _MusicPlaylistAction(_BoundedModel):
+    intent: Literal["music_playlist"]
+    payload: _Playlist
+
+
 class _BrowserOpenAction(_BoundedModel):
     intent: Literal["browser_open"]
     payload: _Url
@@ -130,7 +139,7 @@ class _TimeAction(_BoundedModel):
 
 
 _Action = Annotated[
-    Union[_MusicSearchAction, _MusicControlAction, _BrowserOpenAction, _BrowserAction,
+    Union[_MusicSearchAction, _MusicControlAction, _MusicPlaylistAction, _BrowserOpenAction, _BrowserAction,
           _DiaryAddAction, _DiaryListAction, _ReminderAddAction, _RemindersListAction,
           _TimeAction],
     Field(discriminator="intent"),
@@ -166,12 +175,17 @@ tools or claim access to files, accounts, live web search, purchases, messaging,
 shell commands, or external services. Do not invent current facts or diary data.
 Only these intent/payload pairs are supported, with no additional properties:
 music_search {query:string<=300}; music_control {action:"play"|"pause"} or
-{action:"volume",volume:integer 0..100}; browser_open {url:public http(s) URL};
+{action:"volume",volume:integer 0..100}; music_playlist {action:"play"|"show"};
+browser_open {url:public http(s) URL};
 browser_action {action:"click",target:visible label<=500} or
 {action:"fill",target:visible field label<=500,value:string<=10000} or
 {action:"scroll",direction:"up"|"down"} or {action:"back"};
 diary_add {content:string<=10000}; diary_list {}; reminder_add
 {title:string<=500,delay_seconds:integer 1..2592000}; reminders_list {}; time {}.
+music_playlist uses the application's automatically saved frequently listened
+playlist. Use play when asked to listen to it, show when asked to view it. The
+application checks whether it has tracks; never invent songs, listening history,
+or claim the playlist is populated. Other playlist creation/editing is unsupported.
 Browser navigation must use public websites, never localhost/private addresses,
 credentials in URLs, arbitrary code, selectors, or executable commands. Browser
 clicks remain subject to application confirmation. Changes are permitted only
@@ -214,7 +228,7 @@ _NON_TITLE_WORDS = {
 def _bare_music_title(text: str) -> bool:
     """A conservative fallback; ambiguous conversation requires the online model."""
     text = text.strip()
-    if not 1 <= len(text) <= 120 or re.search(r"[?！!\n\r:/\\@<>{}=;]", text):
+    if not 1 <= len(text) <= 120 or mentions_playlist(text) or re.search(r"[?！!\n\r:/\\@<>{}=;]", text):
         return False
     words = re.findall(r"[^\W_]+(?:['’\-][^\W_]+)*", text, re.UNICODE)
     if not 1 <= len(words) <= 8 or not any(any(c.isalpha() for c in word) for word in words):

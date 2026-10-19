@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .browser import BrowserError, BrowserService
+from .anime import AnimeError, AnimeService
 from .assistant import AssistantService, validate_action
 from .music import MusicError, MusicService
 from .ollama import OllamaService
@@ -113,9 +114,10 @@ def execute_local_action(result: dict, store: Store) -> dict:
 
 
 def create_app(data_dir: Path | None = None, browser=None, music=None, assistant=None,
-               speech=None, wake=None, wake_model=None, ollama=None) -> FastAPI:
+               speech=None, wake=None, wake_model=None, ollama=None, anime=None) -> FastAPI:
     browser = browser or BrowserService()
     music = music or MusicService()
+    anime = anime or AnimeService()
 
     @asynccontextmanager
     async def lifespan(application):
@@ -254,6 +256,20 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
     @application.get("/api/music/playlist")
     async def music_playlist(request: Request):
         return {"tracks": request.app.state.store.frequent_tracks()}
+
+    @application.get("/api/anime/search")
+    async def anime_search(q: str = Query(min_length=1, max_length=200)):
+        try:
+            return await anime.search(q)
+        except AnimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @application.get("/api/anime/episodes")
+    async def anime_episodes(url: str = Query(min_length=1, max_length=2048)):
+        try:
+            return await anime.episodes(url)
+        except AnimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
 
     @application.post("/api/music/listens")
     async def music_listen(body: ListenInput, request: Request):

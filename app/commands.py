@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from difflib import SequenceMatcher
 from urllib.parse import urlsplit, urlunsplit
 
 
@@ -194,6 +195,28 @@ def parse_command(text: str, volume: int = 60) -> dict:
         return _result("browser_action", "Бет жоғары жылжиды.", action="scroll", direction="up")
     if re.fullmatch(r"(?:(?:браузерде\s+)?артқа|(?:вернись\s+)?назад|go\s+back)", command, _FLAGS):
         return _result("browser_action", "Алдыңғы бет ашылады.", action="back")
+
+    season_label = r"(?:сезон(?:ы|ын|ның)?|маусым(?:ы|ын|ның)?|season)"
+    episode_label = r"(?:серия(?:сын|ны|сы)?|серию|серии|эпизод(?:ын|ы)?|episode|бөлім(?:ін|і)?)"
+    anime_cue = re.search(rf"\b(?:аниме|anime|{season_label}|{episode_label})\b", command, _FLAGS)
+    known_anime = any(SequenceMatcher(None, command.casefold().strip(' «»"'), name).ratio() >= .72
+                      for name in ("гачиакута", "gachiakuta"))
+    if anime_cue or known_anime:
+        season_match = re.search(rf"(?:\b(\d{{1,2}})\s*{season_label}\b|\b{season_label}\s*(\d{{1,2}})\b)", command, _FLAGS)
+        episode_match = re.search(rf"(?:\b(\d{{1,3}})\s*{episode_label}\b|\b{episode_label}\s*(\d{{1,3}})\b)", command, _FLAGS)
+        season = int(next((value for value in season_match.groups() if value), 1)) if season_match else None
+        episode = int(next((value for value in episode_match.groups() if value), 1)) if episode_match else None
+        query = command
+        for match in (season_match, episode_match):
+            if match:
+                query = query.replace(match.group(0), " ")
+        query = re.sub(r"\b(?:аниме|anime|қара|көр|көрсет|қос|аш|смотри|посмотри|включи|открой|play|watch)\b", " ", query, flags=_FLAGS)
+        query = _unquote(re.sub(r"\s+", " ", query).strip(" :,-"))
+        if not query:
+            return _unknown("Қай анимені көргіңіз келетінін айтыңыз.")
+        if season == 0 or episode == 0:
+            return _unknown("Маусым мен серия 1-ден басталады.")
+        return _result("anime_search", "Аниме ізделеді.", query=query, season=season, episode=episode)
 
     match = re.fullmatch(r"(?:(?:громкость|звук|дыбыс(?:ты)?|дауыс(?:ты)?)(?:\s+(?:на|қой))?\s+(-?\d+)\s*%?(?:\s*[-–]?ға)?(?:\s+(?:қой|орнат))?|(?:установи|поставь)\s+громкость\s+(?:на\s+)?(-?\d+)\s*%?)", command, _FLAGS)
     if match:

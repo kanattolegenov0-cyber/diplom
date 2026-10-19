@@ -64,10 +64,10 @@ class MusicService:
     def _search(self, query: str) -> dict:
         options = {"quiet": True, "no_warnings": True, "logger": QuietLogger(),
                    "extract_flat": True, "skip_download": True, "socket_timeout": 8,
-                   "retries": 0, "extractor_retries": 0, "playlistend": 5,
+                   "retries": 0, "extractor_retries": 0, "playlistend": 10,
                    "nocheckcertificate": False}
         with YoutubeDL(options) as youtube:
-            info = youtube.extract_info(f"ytsearch5:{query}", download=False)
+            info = youtube.extract_info(f"ytsearch10:{query}", download=False)
         tracks = []
         for entry in (info or {}).get("entries", []):
             if not entry or not re.fullmatch(r"[A-Za-z0-9_-]{11}", entry.get("id", "")):

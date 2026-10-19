@@ -165,6 +165,21 @@ def startup_html(log_path: Path) -> str:
     <small>Журнал: {html.escape(str(log_path))}</small></html>"""
 
 
+class AnimeWindowApi:
+    """Open a user-requested AnimeGo page in a separate native WebView2 window."""
+
+    def open_anime(self, url: str) -> bool:
+        from app.anime import safe_anime_url
+
+        safe = safe_anime_url(url)
+        if safe is None:
+            raise ValueError("Аниме сайтының мекенжайы жарамсыз.")
+        import webview
+
+        webview.create_window("Аян · Аниме", url=safe, width=1150, height=780, min_size=(680, 480))
+        return True
+
+
 def run_native(server: LocalServer, log_path: Path, debug: bool) -> None:
     import webview
 
@@ -172,6 +187,7 @@ def run_native(server: LocalServer, log_path: Path, debug: bool) -> None:
     window = webview.create_window(
         "Аян / AYAN",
         html=startup_html(log_path),
+        js_api=AnimeWindowApi(),
         width=1280,
         height=850,
         min_size=(760, 600),

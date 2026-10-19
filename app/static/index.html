@@ -41,6 +41,7 @@
     <nav class="navigation" aria-label="Негізгі навигация">
       <button class="nav-item active" data-view="home" aria-current="page"><svg class="icon"><use href="#i-home"/></svg><span>Басты бет</span><span class="nav-dot"></span></button>
       <button class="nav-item" data-view="music"><svg class="icon"><use href="#i-music"/></svg><span>Музыка</span></button>
+      <button class="nav-item" data-view="anime"><svg class="icon"><use href="#i-play"/></svg><span>Аниме</span></button>
       <button class="nav-item" data-view="browser"><svg class="icon"><use href="#i-browser"/></svg><span>Браузер</span></button>
       <button class="nav-item" data-view="diary"><svg class="icon"><use href="#i-book"/></svg><span>Күнделік</span><span class="nav-count" id="diary-count">0</span></button>
       <button class="nav-item" data-view="reminders"><svg class="icon"><use href="#i-bell"/></svg><span>Еске салғыштар</span></button>
@@ -84,6 +85,21 @@
         </section>
 
         <section class="tool-card playlist-card" data-page="music" aria-labelledby="playlist-heading"><div class="card-heading"><div class="card-title"><span class="section-icon lime"><svg class="icon"><use href="#i-music"/></svg></span><div><h2 id="playlist-heading">Жиі тыңдайтын әуендеріңіз</h2><p>Өзіңіз тыңдаған әндерден автоматты жиналады.</p></div></div><span class="subtle-badge" id="playlist-count">0 ән</span></div><div class="playlist-actions"><button class="small-primary" id="playlist-play" type="button" disabled><svg class="icon"><use href="#i-play"/></svg>Плейлистті тыңдау</button><button class="secondary-button" id="playlist-next" type="button" disabled>Келесі ән <svg class="icon"><use href="#i-arrow"/></svg></button><button class="text-button" id="playlist-refresh" type="button">Жаңарту</button></div><p class="capability-note" id="playlist-notice">Ән кемінде 30 секунд шынымен ойналғаннан кейін тізімге қосылады. Бұл тізім компьютеріңізде сақталады.</p><div class="music-results playlist-tracks" id="playlist-tracks" aria-live="polite"></div></section>
+
+        <section class="tool-card anime-card" data-page="anime" aria-labelledby="anime-heading">
+          <div class="card-heading"><div class="card-title"><span class="section-icon blue"><svg class="icon"><use href="#i-play"/></svg></span><div><h2 id="anime-heading">Аниме қарау</h2><p>Атауын, маусымын және сериясын енгізіңіз.</p></div></div><span class="subtle-badge">AnimeGo</span></div>
+          <form id="anime-search-form" class="anime-search-form">
+            <div class="field anime-name"><label for="anime-query">Аниме атауы</label><input id="anime-query" placeholder="Мысалы, Гачиакута" maxlength="200" required></div>
+            <div class="field"><label for="anime-season">Маусым</label><input id="anime-season" type="number" min="1" max="99" placeholder="1"></div>
+            <div class="field"><label for="anime-episode">Серия</label><input id="anime-episode" type="number" min="1" max="999" placeholder="3"></div>
+            <button class="small-primary" type="submit">Іздеу және ашу</button>
+          </form>
+          <p class="capability-note" id="anime-notice" role="status">Мысалы: «Гачиакута 1 сезон 3 серия қос». Сайттағы ойнату батырмасын басу қажет болуы мүмкін.</p>
+          <div id="anime-results" class="music-results" aria-live="polite"></div>
+          <div id="anime-episodes" class="anime-episodes" aria-live="polite"></div>
+          <div class="anime-frame-wrap"><iframe id="anime-frame" title="Аниме ойнатқышы" src="about:blank" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe></div>
+          <a id="anime-external" class="text-button" href="https://animego.work/370-gachiakuta-2025.html" target="_blank" rel="noopener noreferrer">Сайтта ашу ↗</a>
+        </section>
 
         <section class="tool-card diary-card" data-page="home diary" aria-labelledby="diary-heading">
           <div class="card-heading"><div class="card-title"><span class="section-icon purple"><svg class="icon"><use href="#i-book"/></svg></span><div><h2 id="diary-heading">Ойға орын бар</h2><p>Кішкентай сәттер. Үлкен ойлар.</p></div></div><span class="subtle-badge" id="diary-total">0 жазба</span></div>

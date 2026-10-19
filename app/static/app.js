@@ -35,10 +35,10 @@
     wakePollTimer: null, wakePollRunning: false, wakeInstalling: false, wakeChanging: false,
     wakeActivityPromise: null, wakeActivityLast: null, wakeActivityForce: false, closing: false,
     playlist: [], playlistQueue: [], playlistQueueIndex: -1, playlistQueueActive: false,
-    listenSession: null,
+    listenSession: null, musicCandidates: [], failedMusicIds: new Set(), musicRecoveryBusy: false,
     ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
   };
-  const viewNames = { home: 'Басты бет', music: 'Музыка', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
+  const viewNames = { home: 'Басты бет', music: 'Музыка', anime: 'Аниме', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
   const months = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз', 'қыркүйек', 'қазан', 'қараша', 'желтоқсан'];
   function syncSidebar() { $('#sidebar').inert = mobileMedia.matches && !$('#sidebar').classList.contains('open'); }
@@ -800,7 +800,7 @@
       const title = document.createElement('strong'); title.textContent = track.title || 'YouTube бейнесі';
       const channel = document.createElement('small'); channel.textContent = track.channel || 'YouTube';
       details.append(title, channel); button.append(image, details, icons('play'));
-      button.addEventListener('click', () => selectTrack(track).catch((error) => toast(error.message, true)));
+      button.addEventListener('click', () => selectTrack(track, { candidates: validTracks }).catch((error) => toast(error.message, true)));
       results.append(button);
     }
     appendSearchFallback(results, query);
@@ -811,7 +811,7 @@
     }
     $('#music-notice').textContent = 'Әнді таңдап ойнатыңыз. Автоматты ойнату үшін қосымша басу қажет болуы мүмкін.';
     if (autoSelect) {
-      await selectTrack(validTracks[0]);
+      await selectTrack(validTracks[0], { candidates: validTracks });
       const trackName = validTracks[0].title || query;
       return state.playing ? `Ойнап жатыр: ${trackName}.` : `Таңдалған ән: ${trackName}. Басталмаса, ойнату батырмасын басыңыз.`;
     }
@@ -849,8 +849,49 @@
     $('#play-toggle').disabled = true;
     updatePlayback(false);
   }
-  async function selectTrack(track, { fromQueue = false } = {}) {
+  async function recoverMusic(errorCode) {
+    if (state.musicRecoveryBusy || !state.currentTrack) return;
+    if (errorCode === 153) {
+      updatePlayback(false);
+      if (state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
+      state.playlistQueueActive = false; renderPlaylist();
+      $('#music-notice').textContent = 'YouTube бұл кірістірілген ойнатқышты қабылдамады (153). YouTube-та ашып көріңіз немесе қолданбаны жаңартыңыз.';
+      return;
+    }
+    state.musicRecoveryBusy = true;
+    const failed = state.currentTrack;
+    state.failedMusicIds.add(failed.id);
+    updatePlayback(false);
+    if (state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
+    $('#music-notice').textContent = `Бейне Аян ішінде ашылмады (${errorCode}). Басқа нұсқасын іздеп жатырмын…`;
+    try {
+      let alternatives = state.musicCandidates;
+      if (!alternatives.length) {
+        if (!failed.title || failed.title === 'YouTube бейнесі' || failed.title === 'YouTube') {
+          state.playlistQueueActive = false; renderPlaylist();
+          $('#music-notice').textContent = 'Бұл сілтемедегі бейнені Аян ішінде ашуға болмайды. YouTube-та ашу сілтемесін пайдаланыңыз.';
+          return;
+        }
+        const response = await api(`/api/music/search?q=${encodeURIComponent(`${failed.title || ''} ${failed.channel || ''}`.trim())}`, { timeout: 25000 });
+        alternatives = Array.isArray(response.tracks) ? response.tracks : [];
+      }
+      const next = alternatives.find((track) => /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')) && !state.failedMusicIds.has(track.id));
+      if (next) {
+        await selectTrack(next, { fromQueue: state.playlistQueueActive, candidates: alternatives, recovering: true });
+        $('#music-notice').textContent = `Алдыңғы бейнені кірістіруге болмайды. Басқа нұсқа таңдалды: ${next.title || 'YouTube бейнесі'}.`;
+      } else {
+        state.playlistQueueActive = false; renderPlaylist();
+        $('#music-notice').textContent = 'Бұл әннің Аян ішінде ойнатылатын нұсқасы табылмады. YouTube-та ашу сілтемесін пайдаланыңыз.';
+      }
+    } catch (error) {
+      state.playlistQueueActive = false; renderPlaylist();
+      $('#music-notice').textContent = `Басқа нұсқаны іздеу мүмкін болмады: ${error.message}`;
+    } finally { state.musicRecoveryBusy = false; }
+  }
+  async function selectTrack(track, { fromQueue = false, candidates = [], recovering = false } = {}) {
     if (!/^[A-Za-z0-9_-]{11}$/.test(String(track?.id || ''))) throw new Error('YouTube бейне идентификаторы жарамсыз.');
+    if (!recovering) state.failedMusicIds.clear();
+    state.musicCandidates = candidates;
     if (!fromQueue) { state.playlistQueueActive = false; state.playlistQueueIndex = -1; }
     prepareListenSession(track, true); resetListeningBaseline(); updatePlayback(false);
     state.currentTrack = track;
@@ -875,12 +916,13 @@
             events: {
               onReady: () => { if (state.player !== initializingPlayer) return; clearTimeout(timer); state.playerReady = true; state.player.setVolume(state.volume); $('#play-toggle').disabled = false; if (state.currentTrack?.id !== track.id) state.player.loadVideoById(state.currentTrack.id); else state.player.playVideo(); resolve(); },
               onStateChange: handleMusicState,
-              onError: () => {
-                const errorMessage = 'Бұл бейнені осы ойнатқышта ашу мүмкін болмады. YouTube-та ашу сілтемесін пайдаланыңыз.';
-                updatePlayback(false); $('#music-notice').textContent = errorMessage;
-                if (state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
-                state.playlistQueueActive = false; renderPlaylist();
-                if (!state.playerReady) { clearTimeout(timer); reject(new Error(errorMessage)); }
+              onError: (event) => {
+                if (!state.playerReady) {
+                  clearTimeout(timer);
+                  reject(new Error('YouTube ойнатқышы дайын болмады. YouTube-та ашу сілтемесін пайдаланыңыз.'));
+                  return;
+                }
+                recoverMusic(event.data);
               },
               onAutoplayBlocked: () => { updatePlayback(false); resetListeningBaseline(); $('#music-notice').textContent = 'Ойнату батырмасын басыңыз: автоматты ойнатуға рұқсат берілмеді.'; },
             },
@@ -909,6 +951,92 @@
     if (payload.action === 'pause') { state.player.pauseVideo(); updatePlayback(false); return 'Музыка кідіртілді.'; }
     state.player.playVideo();
     return 'Ойнатуды сұрадым. Әуен басталмаса, ойнату батырмасын басыңыз.';
+  }
+
+  function safeAnimeUrl(value) {
+    try {
+      const url = new URL(value);
+      return url.protocol === 'https:' && url.hostname === 'animego.work' && !url.port && !url.username && !url.password ? url.href : null;
+    } catch { return null; }
+  }
+  async function displayAnimePage(url, notice) {
+    $('#anime-external').href = url;
+    const bridge = window.pywebview?.api?.open_anime;
+    if (typeof bridge === 'function') {
+      try {
+        await bridge(url);
+        $('#anime-frame').src = 'about:blank';
+        $('.anime-frame-wrap').hidden = true;
+        $('#anime-notice').textContent = `${notice} Аниме Аянның бөлек терезесінде ашылды.`;
+        return;
+      } catch { /* The embedded page remains available if native window creation fails. */ }
+    }
+    $('.anime-frame-wrap').hidden = false;
+    $('#anime-frame').src = url;
+    $('#anime-notice').textContent = `${notice} Егер кірістірілген бет ашылмаса, «Сайтта ашу» сілтемесін қолданыңыз.`;
+  }
+  async function openAnime(result, season, episode) {
+    const seriesUrl = safeAnimeUrl(result.url);
+    if (!seriesUrl) throw new Error('Аниме сілтемесі жарамсыз.');
+    let selectedUrl = seriesUrl;
+    let notice = 'Аниме беті ашылды. Ойнату батырмасын сайттың ішінен басыңыз.';
+    $('#anime-episodes').replaceChildren();
+    try {
+      const response = await api(`/api/anime/episodes?url=${encodeURIComponent(seriesUrl)}`, { timeout: 16000 });
+      const episodes = Array.isArray(response.episodes) ? response.episodes : [];
+      for (const item of episodes) {
+        const url = safeAnimeUrl(item.url);
+        if (!url) continue;
+        const button = document.createElement('button');
+        button.className = 'secondary-button'; button.type = 'button';
+        button.textContent = `${item.season}-маусым · ${item.episode}-серия`;
+        button.addEventListener('click', () => displayAnimePage(url, `${button.textContent} беті ашылды. Сайттағы ойнату батырмасын басыңыз.`).catch((error) => toast(error.message, true)));
+        $('#anime-episodes').append(button);
+      }
+      if (episode) {
+        const match = episodes.find((item) => item.episode === episode && (!season || item.season === season) && safeAnimeUrl(item.url));
+        if (match) {
+          selectedUrl = safeAnimeUrl(match.url);
+          notice = `${match.season}-маусым, ${match.episode}-серия беті ашылды. Сайттағы ойнату батырмасын басыңыз.`;
+        } else {
+          notice = `Сұралған ${season || 1}-маусым, ${episode}-серияға тікелей сілтеме табылмады. Аниме беті ашылды; серияны сайттан таңдаңыз.`;
+        }
+      }
+    } catch (error) {
+      notice = `Серия тізімі жүктелмеді: ${error.message} Аниме бетінен серияны таңдаңыз.`;
+    }
+    await displayAnimePage(selectedUrl, notice);
+    return notice;
+  }
+  async function searchAnime(query, season = null, episode = null) {
+    query = String(query || '').trim();
+    if (!query) throw new Error('Аниме атауын енгізіңіз.');
+    $('#anime-query').value = query;
+    $('#anime-season').value = season || '';
+    $('#anime-episode').value = episode || '';
+    $('#anime-notice').textContent = 'Аниме ізделіп жатыр…';
+    let response;
+    try { response = await api(`/api/anime/search?q=${encodeURIComponent(query)}`, { timeout: 28000 }); }
+    catch (error) {
+      const searchUrl = `https://animego.work/index.php?do=search&subaction=search&story=${encodeURIComponent(query)}`;
+      await displayAnimePage(searchUrl, `${error.message} Сайттағы іздеу беті ашылды; нәтижені қолмен таңдаңыз.`);
+      return $('#anime-notice').textContent;
+    }
+    const results = (Array.isArray(response.results) ? response.results : []).filter((item) => safeAnimeUrl(item.url));
+    $('#anime-results').replaceChildren();
+    for (const item of results) {
+      const button = document.createElement('button');
+      button.className = 'track-result'; button.type = 'button';
+      const title = document.createElement('strong'); title.textContent = item.title || 'Аниме';
+      button.append(icons('play'), title);
+      button.addEventListener('click', () => openAnime(item, season, episode).catch((error) => toast(error.message, true)));
+      $('#anime-results').append(button);
+    }
+    if (!results.length) {
+      $('#anime-notice').textContent = 'Аниме табылмады. Атауын тексеріп, қайта іздеңіз.';
+      return 'Аниме табылмады. Атауын тексеріп, қайта іздеңіз.';
+    }
+    return openAnime(results[0], season, episode);
   }
 
   function confirmClick(target) {
@@ -1047,6 +1175,8 @@
     switch (intent) {
       case 'music_search':
         showView('music'); return searchMusic(payload.query, true, inPlan);
+      case 'anime_search':
+        showView('anime'); return searchAnime(payload.query, payload.season, payload.episode);
       case 'music_control':
         showView('music');
         if (inPlan && payload.action !== 'volume' && !state.playerReady) throw new Error('Алдымен әнді таңдап, ойнатқыштың дайын болғанын күтіңіз.');
@@ -1075,7 +1205,7 @@
   }
   async function executePlan(result) {
     const actions = result.payload?.actions;
-    const allowed = ['music_search', 'music_control', 'music_playlist', 'browser_open', 'browser_action', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
+    const allowed = ['music_search', 'anime_search', 'music_control', 'music_playlist', 'browser_open', 'browser_action', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
     if (!Array.isArray(actions) || !actions.length || actions.length > 6) throw new Error('Жоспарда 1–6 қадам болуы керек. Сұрағыңызды шағын бөліктерге бөліңіз.');
     if (actions.some((action) => !action || !allowed.includes(action.intent) || !action.payload || typeof action.payload !== 'object' || Array.isArray(action.payload))) throw new Error('Жоспар қадамының пішімі жарамсыз. Қайта сұрап көріңіз.');
     for (let index = 0; index < actions.length; index += 1) {
@@ -1172,6 +1302,12 @@
   });
   $('#music-search-form').addEventListener('submit', (event) => {
     event.preventDefault(); withFormBusy(event.currentTarget, () => searchMusic($('#music-query').value));
+  });
+  $('#anime-search-form').addEventListener('submit', (event) => {
+    event.preventDefault();
+    withFormBusy(event.currentTarget, () => searchAnime($('#anime-query').value,
+      $('#anime-season').value ? Number($('#anime-season').value) : null,
+      $('#anime-episode').value ? Number($('#anime-episode').value) : null));
   });
   $('#play-toggle').addEventListener('click', () => controlMusic({ action: state.playing ? 'pause' : 'play' }));
   $('#playlist-play').addEventListener('click', () => playPlaylist().catch((error) => toast(error.message, true)));

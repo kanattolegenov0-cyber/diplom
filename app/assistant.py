@@ -38,6 +38,12 @@ class _MusicQuery(_BoundedModel):
     query: str = Field(min_length=1, max_length=300)
 
 
+class _AnimeQuery(_BoundedModel):
+    query: str = Field(min_length=1, max_length=200)
+    season: int | None = Field(default=None, ge=1, le=99)
+    episode: int | None = Field(default=None, ge=1, le=999)
+
+
 class _PlayPause(_BoundedModel):
     action: Literal["play", "pause"]
 
@@ -97,6 +103,11 @@ class _MusicSearchAction(_BoundedModel):
     payload: _MusicQuery
 
 
+class _AnimeSearchAction(_BoundedModel):
+    intent: Literal["anime_search"]
+    payload: _AnimeQuery
+
+
 class _MusicControlAction(_BoundedModel):
     intent: Literal["music_control"]
     payload: Annotated[Union[_PlayPause, _Volume], Field(discriminator="action")]
@@ -143,7 +154,7 @@ class _TimeAction(_BoundedModel):
 
 
 _Action = Annotated[
-    Union[_MusicSearchAction, _MusicControlAction, _MusicPlaylistAction, _BrowserOpenAction, _BrowserAction,
+    Union[_MusicSearchAction, _AnimeSearchAction, _MusicControlAction, _MusicPlaylistAction, _BrowserOpenAction, _BrowserAction,
           _DiaryAddAction, _DiaryListAction, _ReminderAddAction, _RemindersListAction,
           _TimeAction],
     Field(discriminator="intent"),
@@ -168,7 +179,8 @@ class _ModelResponse(_BoundedModel):
 _SYSTEM_PROMPT = """You are AYAN, a personal assistant. Understand natural Kazakh and Russian,
 including casual speech, missing command keywords, and bare artist/song titles.
 Reply in the user's language (kk-KZ Kazakh or ru-RU Russian). You can answer
-general questions normally. For music titles, plan music_search; do not demand
+general questions normally. For music titles, plan music_search. For anime titles,
+seasons or episodes, plan anime_search; do not demand
 the user say a fixed phrase. Return only a JSON object:
 {"message":"a concise reply", "actions":[{"intent":"...", "payload":{...}}],
  "clarification":"optional question when essential information is missing"}.
@@ -178,7 +190,7 @@ answers use an empty actions array. Clarify unsupported requests, do not invent
 tools or claim access to files, accounts, live web search, purchases, messaging,
 shell commands, or external services. Do not invent current facts or diary data.
 Only these intent/payload pairs are supported, with no additional properties:
-music_search {query:string<=300}; music_control {action:"play"|"pause"} or
+music_search {query:string<=300}; anime_search {query:string<=200,season:integer 1..99 or null,episode:integer 1..999 or null}; music_control {action:"play"|"pause"} or
 {action:"volume",volume:integer 0..100}; music_playlist {action:"play"|"show"};
 browser_open {url:public http(s) URL};
 browser_action {action:"click",target:visible label<=500} or
@@ -220,7 +232,7 @@ _NON_TITLE_WORDS = {
     "райы", "маған", "мен", "менің", "сен", "сенің", "сіз", "сіздің", "біз", "бүгін",
     "ертең", "керек", "бұл", "осы", "істе", "жақсысың", "қалайсың", "ретте", "орында",
     "көмектесші", "айтшы", "берші", "бер", "жоспарла", "тапсырмамды", "жақсы",
-    "жарайды", "дұрыс", "түсінікті", "иә", "жоқ",
+    "жарайды", "дұрыс", "түсінікті", "иә", "жоқ", "аниме", "anime", "сезон", "маусым", "серия", "эпизод", "episode",
     "hello", "hi", "hey", "thanks", "thank", "please", "how", "what", "where", "why",
     "when", "who", "can", "do", "show", "open", "close", "create", "write", "remind",
     "find", "play", "stop", "pause", "resume", "volume", "set", "delete", "install",

@@ -6,6 +6,10 @@ import re
 import sqlite3
 
 
+_YOUTUBE_CHECK = "length(video_id) = 11 AND video_id NOT GLOB '*[^A-Za-z0-9_-]*'"
+_MEDIA_CHECK = "(" + _YOUTUBE_CHECK + ") OR (substr(video_id, 1, 3) = 'sc:' AND length(video_id) BETWEEN 4 AND 23 AND substr(video_id, 4) NOT GLOB '*[^0-9]*')"
+
+
 def timestamp() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -47,6 +51,21 @@ class Store:
                 CREATE INDEX IF NOT EXISTS tracks_frequent
                     ON tracks(play_count DESC, last_played_at DESC, video_id ASC);
             """)
+            # Rebuild the two old constrained tables atomically, retaining listens.
+            connection.execute("BEGIN IMMEDIATE")
+            for table in ("tracks", "play_sessions"):
+                schema = connection.execute("SELECT sql FROM sqlite_master WHERE name=?", (table,)).fetchone()[0]
+                if "'sc:'" in schema:
+                    continue
+                upgraded = schema.replace(_YOUTUBE_CHECK, _MEDIA_CHECK)
+                if upgraded == schema:
+                    raise RuntimeError("Unsupported music database schema")
+                upgraded = re.sub(r'^CREATE TABLE\s+"?' + table + r'"?', "CREATE TABLE " + table + "_upgraded", upgraded)
+                connection.execute(upgraded)
+                connection.execute(f"INSERT INTO {table}_upgraded SELECT * FROM {table}")
+                connection.execute(f"DROP TABLE {table}")
+                connection.execute(f"ALTER TABLE {table}_upgraded RENAME TO {table}")
+            connection.execute("CREATE INDEX IF NOT EXISTS tracks_frequent ON tracks(play_count DESC, last_played_at DESC, video_id ASC)")
 
     def connect(self):
         connection = sqlite3.connect(self.path, timeout=10)
@@ -103,7 +122,7 @@ class Store:
             "id": row["video_id"], "title": row["title"], "channel": row["channel"],
             "play_count": row["play_count"], "total_listen_seconds": row["total_listen_seconds"],
             "last_played_at": row["last_played_at"],
-            "thumbnail": f"https://i.ytimg.com/vi/{row['video_id']}/hqdefault.jpg",
+            "thumbnail": "" if row["video_id"].startswith("sc:") else f"https://i.ytimg.com/vi/{row['video_id']}/hqdefault.jpg",
         }
 
     def record_listen(self, video_id: str, title: str, channel: str,
@@ -114,8 +133,8 @@ class Store:
         Partial sessions are persisted to prevent reuse for a different video;
         they do not appear in the playlist or contribute to aggregate duration.
         """
-        if not isinstance(video_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id):
-            raise ValueError("YouTube әнінің ID-і 11 әріп, сан, «_» немесе «-» таңбасынан тұруы керек.")
+        if not isinstance(video_id, str) or not re.fullmatch(r"(?:[A-Za-z0-9_-]{11}|sc:[0-9]{1,20})", video_id):
+            raise ValueError("Ән идентификаторы жарамсыз.")
         if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{8,100}", session_id):
             raise ValueError("Тыңдау сессиясының ID-і 8–100 әріп, сан, «.», «_» немесе «-» таңбасынан тұруы керек.")
         if not isinstance(title, str) or not 1 <= len(title.strip()) <= 300:

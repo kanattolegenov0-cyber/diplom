@@ -62,7 +62,7 @@ class SpeechInput(BaseModel):
 
 
 class ListenInput(BaseModel):
-    video_id: str = Field(pattern=r"^[A-Za-z0-9_-]{11}$")
+    video_id: str = Field(pattern=r"^(?:[A-Za-z0-9_-]{11}|sc:[0-9]{1,20})$")
     title: str = Field(min_length=1, max_length=300)
     channel: str = Field(default="", max_length=200)
     session_id: str = Field(pattern=r"^[A-Za-z0-9._-]{8,100}$")
@@ -245,11 +245,12 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
         return {"ok": True}
 
     @application.get("/api/music/search")
-    async def music_search(q: str = Query(min_length=1, max_length=300)):
+    async def music_search(q: str = Query(min_length=1, max_length=300),
+                           source: Literal["youtube", "soundcloud"] = "youtube"):
         if not q.strip():
             raise HTTPException(422, "Ән атауын енгізіңіз.")
         try:
-            return await music.search(q)
+            return await music.soundcloud(q) if source == "soundcloud" else await music.search(q)
         except MusicError as exc:
             raise HTTPException(502, str(exc)) from exc
 
@@ -268,6 +269,13 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
     async def anime_episodes(url: str = Query(min_length=1, max_length=2048)):
         try:
             return await anime.episodes(url)
+        except AnimeError as exc:
+            raise HTTPException(502, str(exc)) from exc
+
+    @application.get("/api/anime/player")
+    async def anime_player(url: str = Query(min_length=1, max_length=2048)):
+        try:
+            return await anime.player(url)
         except AnimeError as exc:
             raise HTTPException(502, str(exc)) from exc
 

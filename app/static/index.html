@@ -76,8 +76,8 @@
       <div class="workspace-heading" data-page="home"><div><span class="eyebrow small">БӘРІ ҚОЛ АСТЫҢЫЗДА</span><h2>Сіздің кеңістігіңіз</h2></div><span class="workspace-hint">Күнделікті істер, бір жерде.</span></div>
       <div class="workspace-grid">
         <section class="tool-card music-card" data-page="home music" aria-labelledby="music-heading">
-          <div class="card-heading"><div class="card-title"><span class="section-icon lime"><svg class="icon"><use href="#i-headphones"/></svg></span><div><h2 id="music-heading">Сіздің әуеніңіз</h2><p>Көңіл күйіңізге сай музыка</p></div></div><span class="source-badge"><span class="youtube-mark">▶</span> YouTube</span></div>
-          <form class="search-form" id="music-search-form"><svg class="icon"><use href="#i-search"/></svg><label class="sr-only" for="music-query">Ән немесе орындаушы</label><input id="music-query" placeholder="Әнді немесе орындаушыны іздеу" maxlength="300" required><button type="submit">Іздеу</button></form>
+          <div class="card-heading"><div class="card-title"><span class="section-icon lime"><svg class="icon"><use href="#i-headphones"/></svg></span><div><h2 id="music-heading">Сіздің әуеніңіз</h2><p>Көңіл күйіңізге сай музыка</p></div></div><span class="source-badge" id="music-source-badge">YouTube · SoundCloud</span></div>
+          <div class="music-provider"><label for="music-source">Музыка көзі</label><select id="music-source"><option value="auto">Автоматты · YouTube → SoundCloud</option><option value="youtube">YouTube</option><option value="soundcloud">SoundCloud</option></select></div><form class="search-form" id="music-search-form"><svg class="icon"><use href="#i-search"/></svg><label class="sr-only" for="music-query">Ән немесе орындаушы</label><input id="music-query" placeholder="Әнді немесе орындаушыны іздеу" maxlength="300" required><button type="submit">Іздеу</button></form>
           <div class="player-stage" id="player-stage"><div class="music-art" id="music-placeholder"><div class="art-orbit"></div><div class="art-disc"><div></div></div><span class="art-label">YOUR DAILY SOUNDTRACK</span><div class="art-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><div id="youtube-player"></div></div>
           <div class="track-meta"><div><h3 id="track-title">Күніңіздің саундтрегін таңдаңыз</h3><p id="track-channel">Сүйікті әніңізді іздеп бастаңыз</p></div><button class="player-play" id="play-toggle" aria-label="Музыканы ойнату" disabled><svg class="icon"><use href="#i-play"/></svg></button></div>
           <div class="player-bottom"><div class="volume-control"><svg class="icon"><use href="#i-volume"/></svg><label class="sr-only" for="volume-slider">Дыбыс деңгейі</label><input id="volume-slider" type="range" min="0" max="100" value="60"><span id="volume-value">60%</span></div><a id="youtube-link" href="https://www.youtube.com" target="_blank" rel="noopener noreferrer">YouTube-та ашу <svg class="icon"><use href="#i-arrow-up"/></svg></a></div>
@@ -94,10 +94,10 @@
             <div class="field"><label for="anime-episode">Серия</label><input id="anime-episode" type="number" min="1" max="999" placeholder="3"></div>
             <button class="small-primary" type="submit">Іздеу және ашу</button>
           </form>
-          <p class="capability-note" id="anime-notice" role="status">Мысалы: «Гачиакута 1 сезон 3 серия қос». Сайттағы ойнату батырмасын басу қажет болуы мүмкін.</p>
+          <p class="capability-note" id="anime-notice" role="status">Мысалы: «Гачиакута 1 сезон 3 серия қос». Табылған бейнеплеер осы жерде көрсетіледі.</p>
           <div id="anime-results" class="music-results" aria-live="polite"></div>
           <div id="anime-episodes" class="anime-episodes" aria-live="polite"></div>
-          <div class="anime-frame-wrap" hidden><iframe id="anime-frame" title="Аниме ойнатқышы" src="about:blank" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe></div>
+          <div id="anime-players" class="anime-episodes"></div><div class="anime-frame-wrap" hidden><video id="anime-video" controls playsinline preload="metadata" hidden></video><iframe id="anime-frame" title="Аниме ойнатқышы" src="about:blank" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe></div>
           <a id="anime-external" class="text-button" href="https://animego.work/370-gachiakuta-2025.html" target="_blank" rel="noopener noreferrer">Сайтта ашу ↗</a>
         </section>
 

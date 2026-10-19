@@ -9,6 +9,7 @@ import re
 from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
+from .commands import normalize_public_url
 
 
 BASE = "https://animego.work"
@@ -25,6 +26,8 @@ class AnimeError(Exception):
 def safe_anime_url(url: str) -> str | None:
     try:
         parts = urlsplit(urljoin(BASE + "/", url))
+        if parts.port is not None:
+            return None
     except ValueError:
         return None
     if parts.scheme != "https" or parts.hostname != "animego.work" or parts.port is not None or parts.username or parts.password:
@@ -70,10 +73,67 @@ class _Links(HTMLParser):
             self._text = []
 
 
+def player_url(value: str, kind: str, page_url: str) -> str | None:
+    """Accept actual media sources and known embed endpoints, never a series page."""
+    try:
+        url = normalize_public_url(urljoin(page_url, value))
+        parts = urlsplit(url)
+        if parts.scheme != "https" or parts.port is not None:
+            return None
+    except ValueError:
+        return None
+    if kind == "video":
+        return url if parts.path.lower().endswith((".mp4", ".webm")) else None
+    host = parts.hostname
+    if host in {"kodik.info", "kodik.cc", "kodik.biz", "kodikvideo.com", "kodikplayer.com"} and re.match(r"^/(?:serial|video)/", parts.path):
+        return url
+    if host == "video.sibnet.ru" and parts.path == "/shell.php" and re.search(r"(?:^|&)videoid=\d+(?:&|$)", parts.query):
+        return url
+    if host in {"aniboom.one", "animego.work"} and parts.path.startswith(("/embed/", "/player/")):
+        return url
+    return None
+
+
+class _Players(HTMLParser):
+    def __init__(self, page_url: str):
+        super().__init__(convert_charrefs=True)
+        self.page_url = page_url
+        self.players = []
+        self.in_video = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "video":
+            self.in_video = True
+        if tag not in {"iframe", "video"} and not (tag == "source" and self.in_video):
+            return
+        attrs = dict(attrs)
+        kind = "embed" if tag == "iframe" else "video"
+        for name in ("src", "data-src"):
+            value = attrs.get(name)
+            url = player_url(value, kind, self.page_url) if value else None
+            item = {"kind": kind, "url": url}
+            if url and item not in self.players:
+                self.players.append(item)
+
+    def handle_endtag(self, tag):
+        if tag == "video":
+            self.in_video = False
+
+
 class AnimeService:
     def __init__(self, client: httpx.AsyncClient | None = None):
         self.client = client
         self.catalog = {GACHIAKUTA: "Гачиакута / Gachiakuta"}
+
+    async def player(self, url: str) -> dict:
+        safe = safe_anime_url(url)
+        if not safe or not _SERIES_PATH.fullmatch(urlsplit(safe).path):
+            raise AnimeError("Аниме бетінің сілтемесі жарамсыз.")
+        parser = _Players(safe)
+        parser.feed(await self._get(safe))
+        if not parser.players:
+            raise AnimeError("Бұл беттен жеке бейнеплеер табылмады. Басқа серияны таңдаңыз немесе сайтта ашыңыз.")
+        return {"players": parser.players[:10]}
 
     async def _get(self, url: str) -> str:
         safe = safe_anime_url(url)

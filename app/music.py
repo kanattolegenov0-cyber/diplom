@@ -42,6 +42,40 @@ class MusicService:
         self.cache = OrderedDict()
         self.lock = asyncio.Lock()
 
+    async def soundcloud(self, query: str) -> dict:
+        """Search metadata only; audio remains in the official SoundCloud widget."""
+        key = ("soundcloud", query.strip().casefold())
+        async with self.lock:
+            cached = self.cache.get(key)
+            if cached and time.monotonic() - cached[0] < 300:
+                return cached[1]
+            try:
+                result = await asyncio.wait_for(asyncio.to_thread(self._soundcloud, query.strip()), 25)
+            except Exception as exc:
+                raise MusicError("SoundCloud іздеуі қолжетімсіз. Кейін қайталап көріңіз.") from exc
+            self.cache[key] = (time.monotonic(), result)
+            if len(self.cache) > 64:
+                self.cache.popitem(last=False)
+            return result
+
+    def _soundcloud(self, query: str) -> dict:
+        options = {"quiet": True, "no_warnings": True, "logger": QuietLogger(),
+                   "extract_flat": True, "skip_download": True, "socket_timeout": 8,
+                   "retries": 0, "extractor_retries": 0, "playlistend": 5}
+        with YoutubeDL(options) as service:
+            info = service.extract_info(f"scsearch5:{query}", download=False)
+        tracks = []
+        for entry in (info or {}).get("entries", []):
+            identifier = str((entry or {}).get("id", ""))
+            if not re.fullmatch(r"[0-9]{1,20}", identifier):
+                continue
+            tracks.append({"id": "sc:" + identifier, "source": "soundcloud",
+                           "title": entry.get("title") or "SoundCloud",
+                           "channel": entry.get("uploader") or "SoundCloud"})
+        if not tracks:
+            raise MusicError("SoundCloud-та бұл ән табылмады.")
+        return {"tracks": tracks, "source": "soundcloud"}
+
     async def search(self, query: str) -> dict:
         query = query.strip()
         direct_id = video_id(query)

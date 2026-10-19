@@ -36,6 +36,8 @@
     wakeActivityPromise: null, wakeActivityLast: null, wakeActivityForce: false, closing: false,
     playlist: [], playlistQueue: [], playlistQueueIndex: -1, playlistQueueActive: false,
     listenSession: null, musicCandidates: [], failedMusicIds: new Set(), musicRecoveryBusy: false,
+    playerSource: 'youtube', playbackGeneration: 0, musicQuery: '', soundcloudAttempted: false,
+    soundcloudPromise: null, animeGeneration: 0,
     ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
   };
   const viewNames = { home: 'Басты бет', music: 'Музыка', anime: 'Аниме', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
@@ -643,13 +645,20 @@
   }
 
   function youtubeSearchLink(query) { return `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`; }
+  function isSoundCloud(track) { return /^sc:[0-9]{1,20}$/.test(String(track?.id || '')); }
+  function validMusicTrack(track) { return isSoundCloud(track) || /^[A-Za-z0-9_-]{11}$/.test(String(track?.id || '')); }
   function appendSearchFallback(container, query) {
-    const link = document.createElement('a');
-    link.className = 'results-link';
-    link.href = youtubeSearchLink(query);
-    link.target = '_blank'; link.rel = 'noopener noreferrer';
-    link.textContent = 'YouTube-та іздеу нәтижелерін ашу ↗';
-    container.append(link);
+    const links = document.createElement('div');
+    const source = $('#music-source').value;
+    const providers = source === 'auto' ? ['youtube', 'soundcloud'] : [source];
+    for (const provider of providers) {
+      const link = document.createElement('a'); link.className = 'results-link';
+      link.href = provider === 'soundcloud' ? `https://soundcloud.com/search/sounds?q=${encodeURIComponent(query)}` : youtubeSearchLink(query);
+      link.target = '_blank'; link.rel = 'noopener noreferrer';
+      link.textContent = `${provider === 'soundcloud' ? 'SoundCloud' : 'YouTube'}: іздеу нәтижелерін ашу ↗`;
+      links.append(link);
+    }
+    container.append(links);
   }
   function newSessionId() {
     if (typeof crypto.randomUUID === 'function') return crypto.randomUUID();
@@ -671,7 +680,7 @@
     if (!session || !state.playerReady || !state.playing || session.ended) { resetListeningBaseline(); return; }
     let position;
     try {
-      if (typeof state.player.getPlayerState === 'function' && state.player.getPlayerState() !== YT.PlayerState.PLAYING) { resetListeningBaseline(); return; }
+      if (typeof state.player.getPlayerState === 'function' && state.player.getPlayerState() !== 1) { resetListeningBaseline(); return; }
       const videoId = state.player.getVideoData?.()?.video_id;
       if (videoId && videoId !== session.video_id) { resetListeningBaseline(); return; }
       position = Number(state.player.getCurrentTime?.());
@@ -717,7 +726,8 @@
       const button = document.createElement('button'); button.type = 'button'; button.className = 'track-result';
       button.classList.toggle('active', state.currentTrack?.id === track.id);
       const image = document.createElement('img'); image.alt = ''; image.loading = 'lazy'; image.referrerPolicy = 'no-referrer';
-      image.src = `https://i.ytimg.com/vi/${encodeURIComponent(track.id)}/default.jpg`;
+      if (isSoundCloud(track)) image.hidden = true;
+      else image.src = `https://i.ytimg.com/vi/${encodeURIComponent(track.id)}/default.jpg`;
       const details = document.createElement('span');
       const title = document.createElement('strong'); title.textContent = track.title || 'YouTube бейнесі';
       const channel = document.createElement('small'); channel.textContent = track.channel || 'YouTube';
@@ -729,7 +739,7 @@
   }
   async function loadPlaylist() {
     const result = await api('/api/music/playlist', { timeout: 12000 });
-    state.playlist = (Array.isArray(result.tracks) ? result.tracks : []).filter((track) => /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')));
+    state.playlist = (Array.isArray(result.tracks) ? result.tracks : []).filter(validMusicTrack);
     renderPlaylist();
   }
   async function playPlaylist() {
@@ -753,7 +763,7 @@
     return 'Плейлисттегі келесі ән таңдалды.';
   }
   function handleMusicState(event) {
-    const playing = event.data === YT.PlayerState.PLAYING;
+    const playing = event.data === 1;
     if (!playing && state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
     updatePlayback(playing);
     if (playing) {
@@ -761,7 +771,7 @@
       sampleListening();
       $('#music-notice').textContent = 'Ойнап жатыр. Дыбыс деңгейін өзгерте аласыз.';
     }
-    if (event.data === YT.PlayerState.ENDED) {
+    if (event.data === 0) {
       if (state.listenSession) state.listenSession.ended = true;
       $('#music-notice').textContent = 'Әуен аяқталды. Басқа әнді таңдаңыз.';
       if (state.playlistQueueActive && state.playlistQueueIndex + 1 < state.playlistQueue.length) nextPlaylistTrack().catch((error) => toast(error.message, true));
@@ -772,21 +782,31 @@
     query = String(query || '').trim();
     if (!query) throw new Error('Ән немесе орындаушы атауын енгізіңіз.');
     $('#music-query').value = query;
+    state.musicQuery = query;
+    state.soundcloudAttempted = false;
     $('#music-notice').textContent = 'Әуендерді іздеп жатырмын…';
     const results = $('#music-results');
     results.replaceChildren();
     let response;
-    try { response = await api(`/api/music/search?q=${encodeURIComponent(query)}`, { timeout: 25000 }); }
+    const source = $('#music-source').value;
+    try {
+      try { response = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=${source === 'soundcloud' ? 'soundcloud' : 'youtube'}`, { timeout: 28000 }); }
+      catch (error) {
+        if (source !== 'auto') throw error;
+        $('#music-notice').textContent = 'YouTube іздеуі қолжетімсіз. SoundCloud-тан іздеп жатырмын…';
+        response = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=soundcloud`, { timeout: 28000 });
+      }
+    }
     catch (error) {
       $('#music-notice').textContent = error.message;
       appendSearchFallback(results, query);
       if (strict) throw error;
-      return 'Іздеу қолжетімсіз. YouTube-та іздеу сілтемесін ашуға болады.';
+      return 'Іздеу қолжетімсіз. Музыка қызметтеріндегі іздеу сілтемелерін ашуға болады.';
     }
     const tracks = Array.isArray(response.tracks) ? response.tracks : [];
     const validTracks = [];
     for (const track of tracks) {
-      if (!/^[A-Za-z0-9_-]{11}$/.test(String(track.id || ''))) continue;
+      if (!validMusicTrack(track)) continue;
       validTracks.push(track);
       const button = document.createElement('button');
       button.className = 'track-result'; button.type = 'button';
@@ -798,16 +818,16 @@
       } catch { /* Missing thumbnail is harmless. */ }
       const details = document.createElement('span');
       const title = document.createElement('strong'); title.textContent = track.title || 'YouTube бейнесі';
-      const channel = document.createElement('small'); channel.textContent = track.channel || 'YouTube';
+      const channel = document.createElement('small'); channel.textContent = `${track.channel || ''} · ${isSoundCloud(track) ? 'SoundCloud' : 'YouTube'}`;
       details.append(title, channel); button.append(image, details, icons('play'));
       button.addEventListener('click', () => selectTrack(track, { candidates: validTracks }).catch((error) => toast(error.message, true)));
       results.append(button);
     }
     appendSearchFallback(results, query);
     if (!tracks.length || results.children.length === 1) {
-      $('#music-notice').textContent = response.error || 'Нәтиже табылмады. YouTube-та іздеуді жалғастыра аласыз.';
+      $('#music-notice').textContent = response.error || 'Нәтиже табылмады. Орындаушы мен ән атауын нақтылап көріңіз.';
       if (strict) throw new Error($('#music-notice').textContent);
-      return 'Музыка нәтижесі табылмады. YouTube-та іздеу сілтемесі дайын.';
+      return 'Музыка нәтижесі табылмады. Іздеу сілтемелері дайын.';
     }
     $('#music-notice').textContent = 'Әнді таңдап ойнатыңыз. Автоматты ойнату үшін қосымша басу қажет болуы мүмкін.';
     if (autoSelect) {
@@ -816,6 +836,69 @@
       return state.playing ? `Ойнап жатыр: ${trackName}.` : `Таңдалған ән: ${trackName}. Басталмаса, ойнату батырмасын басыңыз.`;
     }
     return `${results.children.length - 1} әуен табылды. Тізімнен тыңдағыңыз келетінін таңдаңыз.`;
+  }
+  function loadSoundCloud() {
+    if (window.SC?.Widget) return Promise.resolve();
+    if (state.soundcloudPromise) return state.soundcloudPromise;
+    state.soundcloudPromise = new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const fail = () => { clearTimeout(timer); script.remove(); state.soundcloudPromise = null; reject(new Error('SoundCloud ойнатқышы жүктелмеді.')); };
+      const timer = setTimeout(fail, 15000);
+      script.src = 'https://w.soundcloud.com/player/api.js';
+      script.onload = () => { if (!window.SC?.Widget) { fail(); return; } clearTimeout(timer); resolve(); };
+      script.onerror = fail;
+      document.head.append(script);
+    });
+    return state.soundcloudPromise;
+  }
+  async function startSoundCloud(track, generation) {
+    await loadSoundCloud();
+    if (generation !== state.playbackGeneration) return;
+    const frame = document.createElement('iframe'); frame.id = 'soundcloud-player';
+    frame.title = 'SoundCloud ойнатқышы'; frame.allow = 'autoplay';
+    frame.src = `https://w.soundcloud.com/player/?url=${encodeURIComponent('https://api.soundcloud.com/tracks/' + track.id.slice(3))}&auto_play=false&visual=true`;
+    $('#player-stage').append(frame);
+    $('#player-stage').classList.add('has-video', 'has-soundcloud');
+    const widget = SC.Widget(frame);
+    let position = 0, playing = false;
+    const adapter = {
+      setVolume: (value) => widget.setVolume(value), pauseVideo: () => widget.pause(), playVideo: () => widget.play(),
+      getCurrentTime: () => position, getVideoData: () => ({ video_id: track.id }), getPlayerState: () => playing ? 1 : 2,
+      destroy: () => { widget.pause(); frame.remove(); },
+    };
+    state.player = adapter;
+    const active = () => state.player === adapter && generation === state.playbackGeneration;
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('SoundCloud дайын болмады. Басқа әнді таңдаңыз.')), 15000);
+      widget.bind(SC.Widget.Events.READY, () => {
+        clearTimeout(timer);
+        if (!active()) { resolve(); return; }
+        state.playerReady = true; adapter.setVolume(state.volume); widget.play(); resolve();
+      });
+      widget.bind(SC.Widget.Events.PLAY, () => { if (active()) { playing = true; handleMusicState({ data: 1 }); } });
+      widget.bind(SC.Widget.Events.PAUSE, () => { if (active()) { playing = false; handleMusicState({ data: 2 }); } });
+      widget.bind(SC.Widget.Events.FINISH, () => { if (active()) { playing = false; handleMusicState({ data: 0 }); } });
+      widget.bind(SC.Widget.Events.PLAY_PROGRESS, (event) => { if (active()) position = Number(event.currentPosition) / 1000; });
+      widget.bind(SC.Widget.Events.SEEK, () => { if (active()) resetListeningBaseline(); });
+      widget.bind(SC.Widget.Events.ERROR || 'error', () => {
+        if (!active()) return;
+        if (!state.playerReady) { clearTimeout(timer); reject(new Error('SoundCloud бұл әнді ойнатуға рұқсат бермеді.')); }
+        else recoverMusic('SoundCloud');
+      });
+    });
+  }
+  async function trySoundCloud(failed, generation) {
+    if (state.soundcloudAttempted || isSoundCloud(failed) || $('#music-source').value === 'youtube') return false;
+    const query = (state.musicCandidates.length && !state.playlistQueueActive ? state.musicQuery || failed.title : failed.title || '').trim();
+    if (!query || /^https?:\/\//i.test(query) || /^[A-Za-z0-9_-]{11}$/.test(query) || query === 'YouTube бейнесі') return false;
+    state.soundcloudAttempted = true;
+    $('#music-notice').textContent = 'YouTube-та ашылмады. SoundCloud-тан осы әнді іздеп жатырмын…';
+    const result = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=soundcloud`, { timeout: 28000 });
+    if (generation !== state.playbackGeneration) return true;
+    const candidates = (result.tracks || []).filter(isSoundCloud);
+    if (!candidates.length) return false;
+    await selectTrack(candidates[0], { fromQueue: state.playlistQueueActive, candidates, recovering: true });
+    return true;
   }
   function loadYouTube() {
     if (window.YT?.Player) return Promise.resolve();
@@ -838,59 +921,49 @@
     $('#play-toggle').replaceChildren(icons(playing ? 'pause' : 'play'));
     $('#play-toggle').setAttribute('aria-label', playing ? 'Музыканы тоқтата тұру' : 'Музыканы ойнату');
   }
-  function resetUnreadyPlayer() {
-    if (state.playerReady) return;
+  function resetUnreadyPlayer(force = false) {
+    if (state.playerReady && !force) return;
     try { state.player?.destroy(); } catch { /* An incomplete iframe can still be removed safely. */ }
     state.player = null;
+    state.playerReady = false;
+    document.getElementById('soundcloud-player')?.remove();
     document.getElementById('youtube-player')?.remove();
     const container = document.createElement('div'); container.id = 'youtube-player';
     $('#player-stage').append(container);
-    $('#player-stage').classList.remove('has-video');
+    $('#player-stage').classList.remove('has-video', 'has-soundcloud');
     $('#play-toggle').disabled = true;
     updatePlayback(false);
   }
   async function recoverMusic(errorCode) {
-    if (state.musicRecoveryBusy || !state.currentTrack) return;
-    if (errorCode === 153) {
-      updatePlayback(false);
-      if (state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
-      state.playlistQueueActive = false; renderPlaylist();
-      $('#music-notice').textContent = 'YouTube бұл кірістірілген ойнатқышты қабылдамады (153). YouTube-та ашып көріңіз немесе қолданбаны жаңартыңыз.';
-      return;
-    }
-    state.musicRecoveryBusy = true;
+    const generation = state.playbackGeneration;
+    if (state.musicRecoveryBusy === generation || !state.currentTrack) return;
+    state.musicRecoveryBusy = generation;
     const failed = state.currentTrack;
     state.failedMusicIds.add(failed.id);
     updatePlayback(false);
     if (state.listenSession) { recordListen(state.listenSession, true); resetListeningBaseline(); }
-    $('#music-notice').textContent = `Бейне Аян ішінде ашылмады (${errorCode}). Басқа нұсқасын іздеп жатырмын…`;
     try {
-      let alternatives = state.musicCandidates;
-      if (!alternatives.length) {
-        if (!failed.title || failed.title === 'YouTube бейнесі' || failed.title === 'YouTube') {
-          state.playlistQueueActive = false; renderPlaylist();
-          $('#music-notice').textContent = 'Бұл сілтемедегі бейнені Аян ішінде ашуға болмайды. YouTube-та ашу сілтемесін пайдаланыңыз.';
-          return;
-        }
-        const response = await api(`/api/music/search?q=${encodeURIComponent(`${failed.title || ''} ${failed.channel || ''}`.trim())}`, { timeout: 25000 });
-        alternatives = Array.isArray(response.tracks) ? response.tracks : [];
-      }
-      const next = alternatives.find((track) => /^[A-Za-z0-9_-]{11}$/.test(String(track.id || '')) && !state.failedMusicIds.has(track.id));
+      try { if (await trySoundCloud(failed, generation)) return; }
+      catch { /* Try remaining results when the other provider is unavailable. */ }
+      if (generation !== state.playbackGeneration) return;
+      const next = errorCode === 153 ? null : state.musicCandidates.find((track) => validMusicTrack(track) && !state.failedMusicIds.has(track.id));
       if (next) {
-        await selectTrack(next, { fromQueue: state.playlistQueueActive, candidates: alternatives, recovering: true });
-        $('#music-notice').textContent = `Алдыңғы бейнені кірістіруге болмайды. Басқа нұсқа таңдалды: ${next.title || 'YouTube бейнесі'}.`;
+        await selectTrack(next, { fromQueue: state.playlistQueueActive, candidates: state.musicCandidates, recovering: true });
       } else {
         state.playlistQueueActive = false; renderPlaylist();
-        $('#music-notice').textContent = 'Бұл әннің Аян ішінде ойнатылатын нұсқасы табылмады. YouTube-та ашу сілтемесін пайдаланыңыз.';
+        $('#music-notice').textContent = 'Қолжетімді нұсқа ойнатылмады. Орындаушы мен ән атауын нақтылап, басқа нәтижені таңдаңыз.';
       }
     } catch (error) {
-      state.playlistQueueActive = false; renderPlaylist();
-      $('#music-notice').textContent = `Басқа нұсқаны іздеу мүмкін болмады: ${error.message}`;
-    } finally { state.musicRecoveryBusy = false; }
+      if (generation === state.playbackGeneration) $('#music-notice').textContent = error.message;
+    } finally { if (state.musicRecoveryBusy === generation) state.musicRecoveryBusy = false; }
   }
   async function selectTrack(track, { fromQueue = false, candidates = [], recovering = false } = {}) {
-    if (!/^[A-Za-z0-9_-]{11}$/.test(String(track?.id || ''))) throw new Error('YouTube бейне идентификаторы жарамсыз.');
-    if (!recovering) state.failedMusicIds.clear();
+    if (!validMusicTrack(track)) throw new Error('Ән идентификаторы жарамсыз.');
+    const generation = ++state.playbackGeneration;
+    const source = isSoundCloud(track) ? 'soundcloud' : 'youtube';
+    if (!recovering) { state.failedMusicIds.clear(); state.soundcloudAttempted = source === 'soundcloud'; }
+    if (source !== state.playerSource || source === 'soundcloud') resetUnreadyPlayer(true);
+    state.playerSource = source;
     state.musicCandidates = candidates;
     if (!fromQueue) { state.playlistQueueActive = false; state.playlistQueueIndex = -1; }
     prepareListenSession(track, true); resetListeningBaseline(); updatePlayback(false);
@@ -898,10 +971,20 @@
     renderPlaylist();
     $('#track-title').textContent = track.title || 'YouTube бейнесі';
     $('#track-channel').textContent = track.channel || 'YouTube';
-    $('#youtube-link').href = `https://www.youtube.com/watch?v=${encodeURIComponent(track.id)}`;
+    $('#music-source-badge').textContent = source === 'soundcloud' ? 'SoundCloud' : 'YouTube';
+    $('#youtube-link').href = source === 'soundcloud' ? `https://w.soundcloud.com/player/?url=${encodeURIComponent('https://api.soundcloud.com/tracks/' + track.id.slice(3))}` : `https://www.youtube.com/watch?v=${encodeURIComponent(track.id)}`;
+    $('#youtube-link').textContent = source === 'soundcloud' ? 'SoundCloud-та ашу ↗' : 'YouTube-та ашу ↗';
     $('#music-notice').textContent = 'Ойнатқышты дайындап жатырмын…';
     try {
+      if (source === 'soundcloud') {
+        await startSoundCloud(track, generation);
+        if (generation !== state.playbackGeneration) return;
+        $('#play-toggle').disabled = !state.playerReady;
+        $('#music-notice').textContent = state.playing ? 'SoundCloud: ойнап жатыр.' : 'SoundCloud дайын. Басталмаса, ойнату батырмасын басыңыз.';
+        return;
+      }
       await loadYouTube();
+      if (generation !== state.playbackGeneration) return;
       $('#player-stage').classList.add('has-video');
       if (state.player && state.playerReady) {
         state.player.loadVideoById(track.id);
@@ -915,8 +998,9 @@
             playerVars: { playsinline: 1, rel: 0, autoplay: 0, origin: window.location.origin },
             events: {
               onReady: () => { if (state.player !== initializingPlayer) return; clearTimeout(timer); state.playerReady = true; state.player.setVolume(state.volume); $('#play-toggle').disabled = false; if (state.currentTrack?.id !== track.id) state.player.loadVideoById(state.currentTrack.id); else state.player.playVideo(); resolve(); },
-              onStateChange: handleMusicState,
+              onStateChange: (event) => { if (state.player === initializingPlayer) handleMusicState(event); },
               onError: (event) => {
+                if (state.player !== initializingPlayer) return;
                 if (!state.playerReady) {
                   clearTimeout(timer);
                   reject(new Error('YouTube ойнатқышы дайын болмады. YouTube-та ашу сілтемесін пайдаланыңыз.'));
@@ -924,7 +1008,7 @@
                 }
                 recoverMusic(event.data);
               },
-              onAutoplayBlocked: () => { updatePlayback(false); resetListeningBaseline(); $('#music-notice').textContent = 'Ойнату батырмасын басыңыз: автоматты ойнатуға рұқсат берілмеді.'; },
+              onAutoplayBlocked: () => { if (state.player !== initializingPlayer) return; updatePlayback(false); resetListeningBaseline(); $('#music-notice').textContent = 'Ойнату батырмасын басыңыз: автоматты ойнатуға рұқсат берілмеді.'; },
             },
           });
           state.player = initializingPlayer;
@@ -932,7 +1016,14 @@
       }
       $('#music-notice').textContent = state.playing ? 'Ойнап жатыр. Жақсы тыңдалым!' : 'Ән дайын. Ойнату батырмасын басыңыз.';
       $('#play-toggle').disabled = !state.playerReady;
-    } catch (error) { resetUnreadyPlayer(); $('#music-notice').textContent = error.message; throw error; }
+    } catch (error) {
+      if (generation !== state.playbackGeneration) return;
+      resetUnreadyPlayer();
+      try { if (await trySoundCloud(track, generation)) return; }
+      catch (fallbackError) { error = fallbackError; }
+      $('#music-notice').textContent = error.message;
+      throw error;
+    }
   }
   function setVolume(value) {
     state.volume = clampVolume(value);
@@ -959,20 +1050,54 @@
       return url.protocol === 'https:' && url.hostname === 'animego.work' && !url.port && !url.username && !url.password ? url.href : null;
     } catch { return null; }
   }
-  async function displayAnimePage(url, notice) {
+  function clearAnimePlayer() {
+    $('#anime-frame').src = 'about:blank'; $('#anime-frame').hidden = true;
+    const video = $('#anime-video'); video.pause(); video.removeAttribute('src'); video.load(); video.hidden = true;
+    $('.anime-frame-wrap').hidden = true;
+    $('#anime-players').replaceChildren();
+  }
+  async function displayAnimePage(url, notice, generation = ++state.animeGeneration) {
+    clearAnimePlayer();
     $('#anime-external').href = url;
-    $('.anime-frame-wrap').hidden = false;
-    $('#anime-frame').src = url;
-    $('#anime-notice').textContent = `${notice} Сайт бейнені Аян ішінде көрсетуге рұқсат бермесе, «Сайтта ашу» сілтемесін қолданыңыз.`;
+    $('#anime-notice').textContent = 'Бейнеплеерді дайындап жатырмын…';
+    try {
+      const response = await api(`/api/anime/player?url=${encodeURIComponent(url)}`, { timeout: 16000 });
+      if (generation !== state.animeGeneration) return;
+      const players = (response.players || []).filter((item) => {
+        try { const parsed = new URL(item.url); return ['embed', 'video'].includes(item.kind) && parsed.protocol === 'https:' && !parsed.username && !parsed.password; } catch { return false; }
+      });
+      if (!players.length) throw new Error('Жеке бейнеплеер табылмады. Басқа серияны таңдаңыз.');
+      const showPlayer = (item) => {
+        $('#anime-frame').src = 'about:blank'; $('#anime-frame').hidden = item.kind !== 'embed';
+        const video = $('#anime-video'); video.pause(); video.removeAttribute('src'); video.load(); video.hidden = item.kind !== 'video';
+        $('.anime-frame-wrap').hidden = false;
+        if (item.kind === 'embed') $('#anime-frame').src = item.url;
+        else { video.src = item.url; video.play().catch(() => { $('#anime-notice').textContent = 'Ойнату батырмасын басыңыз.'; }); }
+      };
+      if (players.length > 1) players.forEach((item, index) => {
+        const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary-button';
+        button.textContent = `Ойнатқыш ${index + 1}`;
+        button.addEventListener('click', () => showPlayer(item)); $('#anime-players').append(button);
+      });
+      showPlayer(players[0]);
+      $('#anime-notice').textContent = `${notice} Басталмаса, плеердегі ойнату батырмасын басыңыз.`;
+    } catch (error) {
+      if (generation !== state.animeGeneration) return;
+      $('#anime-notice').textContent = error.message;
+      throw error;
+    }
   }
   async function openAnime(result, season, episode) {
     const seriesUrl = safeAnimeUrl(result.url);
     if (!seriesUrl) throw new Error('Аниме сілтемесі жарамсыз.');
+    const generation = ++state.animeGeneration;
+    clearAnimePlayer();
     let selectedUrl = seriesUrl;
-    let notice = 'Аниме беті ашылды. Ойнату батырмасын сайттың ішінен басыңыз.';
+    let notice = 'Аниме плеері дайын.';
     $('#anime-episodes').replaceChildren();
     try {
       const response = await api(`/api/anime/episodes?url=${encodeURIComponent(seriesUrl)}`, { timeout: 16000 });
+      if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
       const episodes = Array.isArray(response.episodes) ? response.episodes : [];
       for (const item of episodes) {
         const url = safeAnimeUrl(item.url);
@@ -980,27 +1105,31 @@
         const button = document.createElement('button');
         button.className = 'secondary-button'; button.type = 'button';
         button.textContent = `${item.season}-маусым · ${item.episode}-серия`;
-        button.addEventListener('click', () => displayAnimePage(url, `${button.textContent} беті ашылды. Сайттағы ойнату батырмасын басыңыз.`).catch((error) => toast(error.message, true)));
+        button.addEventListener('click', () => displayAnimePage(url, `${button.textContent} плеері дайын.`).catch((error) => toast(error.message, true)));
         $('#anime-episodes').append(button);
       }
       if (episode) {
         const match = episodes.find((item) => item.episode === episode && (!season || item.season === season) && safeAnimeUrl(item.url));
         if (match) {
           selectedUrl = safeAnimeUrl(match.url);
-          notice = `${match.season}-маусым, ${match.episode}-серия беті ашылды. Сайттағы ойнату батырмасын басыңыз.`;
+          notice = `${match.season}-маусым, ${match.episode}-серия плеері дайын.`;
         } else {
-          notice = `Сұралған ${season || 1}-маусым, ${episode}-серияға тікелей сілтеме табылмады. Аниме беті ашылды; серияны сайттан таңдаңыз.`;
+          notice = `${season || 1}-маусым, ${episode}-серия автоматты таңдалмады. Егер плеерде серия таңдауы болса, сол жерден таңдаңыз.`;
         }
       }
     } catch (error) {
-      notice = `Серия тізімі жүктелмеді: ${error.message} Аниме бетінен серияны таңдаңыз.`;
+      notice = 'Серия тізімі жүктелмеді. Плеерде серия таңдауы болса, сол жерден таңдаңыз.';
     }
-    await displayAnimePage(selectedUrl, notice);
+    if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
+    await displayAnimePage(selectedUrl, notice, generation);
     return notice;
   }
   async function searchAnime(query, season = null, episode = null) {
     query = String(query || '').trim();
     if (!query) throw new Error('Аниме атауын енгізіңіз.');
+    const generation = ++state.animeGeneration;
+    clearAnimePlayer();
+    $('#anime-results').replaceChildren(); $('#anime-episodes').replaceChildren();
     $('#anime-query').value = query;
     $('#anime-season').value = season || '';
     $('#anime-episode').value = episode || '';
@@ -1008,10 +1137,11 @@
     let response;
     try { response = await api(`/api/anime/search?q=${encodeURIComponent(query)}`, { timeout: 28000 }); }
     catch (error) {
-      const searchUrl = `https://animego.work/index.php?do=search&subaction=search&story=${encodeURIComponent(query)}`;
-      await displayAnimePage(searchUrl, `${error.message} Сайттағы іздеу беті ашылды; нәтижені қолмен таңдаңыз.`);
-      return $('#anime-notice').textContent;
+      if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
+      $('#anime-notice').textContent = error.message;
+      throw error;
     }
+    if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
     const results = (Array.isArray(response.results) ? response.results : []).filter((item) => safeAnimeUrl(item.url));
     $('#anime-results').replaceChildren();
     for (const item of results) {
@@ -1298,6 +1428,9 @@
     withFormBusy(event.currentTarget, () => searchAnime($('#anime-query').value,
       $('#anime-season').value ? Number($('#anime-season').value) : null,
       $('#anime-episode').value ? Number($('#anime-episode').value) : null));
+  });
+  $('#anime-video').addEventListener('error', () => {
+    if (!$('#anime-video').hidden) $('#anime-notice').textContent = 'Бейне жүктелмеді. Басқа плеерді немесе серияны таңдаңыз.';
   });
   $('#play-toggle').addEventListener('click', () => controlMusic({ action: state.playing ? 'pause' : 'play' }));
   $('#playlist-play').addEventListener('click', () => playPlaylist().catch((error) => toast(error.message, true)));

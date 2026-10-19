@@ -961,19 +961,9 @@
   }
   async function displayAnimePage(url, notice) {
     $('#anime-external').href = url;
-    const bridge = window.pywebview?.api?.open_anime;
-    if (typeof bridge === 'function') {
-      try {
-        await bridge(url);
-        $('#anime-frame').src = 'about:blank';
-        $('.anime-frame-wrap').hidden = true;
-        $('#anime-notice').textContent = `${notice} Аниме Аянның бөлек терезесінде ашылды.`;
-        return;
-      } catch { /* The embedded page remains available if native window creation fails. */ }
-    }
     $('.anime-frame-wrap').hidden = false;
     $('#anime-frame').src = url;
-    $('#anime-notice').textContent = `${notice} Егер кірістірілген бет ашылмаса, «Сайтта ашу» сілтемесін қолданыңыз.`;
+    $('#anime-notice').textContent = `${notice} Сайт бейнені Аян ішінде көрсетуге рұқсат бермесе, «Сайтта ашу» сілтемесін қолданыңыз.`;
   }
   async function openAnime(result, season, episode) {
     const seriesUrl = safeAnimeUrl(result.url);

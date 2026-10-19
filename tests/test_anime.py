@@ -1,14 +1,11 @@
 import httpx
 import pytest
-import sys
-from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 from app.anime import AnimeError, AnimeService, GACHIAKUTA, safe_anime_url
 from app.assistant import validate_action
 from app.commands import parse_command
 from app.main import create_app
-from desktop import AnimeWindowApi
 
 
 @pytest.mark.parametrize("text,query,season,episode", [
@@ -85,14 +82,3 @@ def test_anime_api_uses_service_without_live_site(tmp_path):
         assert client.get("/api/anime/search", params={"q": "Gachiakuta"}).json()["results"][0]["url"] == GACHIAKUTA
         assert client.get("/api/anime/episodes", params={"url": GACHIAKUTA}).status_code == 200
         assert client.get("/api/anime/episodes", params={"url": "https://evil.test"}).status_code == 502
-
-
-def test_native_anime_window_only_opens_animego(monkeypatch):
-    opened = []
-    monkeypatch.setitem(sys.modules, "webview", SimpleNamespace(create_window=lambda *args, **kwargs: opened.append((args, kwargs))))
-    api = AnimeWindowApi()
-    with pytest.raises(ValueError):
-        api.open_anime("https://evil.test/watch")
-    assert not opened
-    assert api.open_anime(GACHIAKUTA) is True
-    assert opened[0][1]["url"] == GACHIAKUTA

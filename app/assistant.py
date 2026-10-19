@@ -1,4 +1,4 @@
-"""Natural-language planning with bounded tools and an optional online model.
+"""Natural-language planning with bounded tools and local or optional cloud models.
 
 This service resolves requests only. The application remains responsible for
 executing a plan and reporting the actual result of each action.
@@ -6,6 +6,7 @@ executing a plan and reporting the actual result of each action.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Annotated, Literal, Union
@@ -14,12 +15,15 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 
 from .commands import MAX_REMINDER_DELAY, mentions_playlist, normalize_public_url, parse_command
+from .ollama import DEFAULT_OLLAMA_MODEL, OLLAMA_BASE_URL, OllamaService, valid_model_name
 
 
 _API_URL = "https://api.openai.com/v1/chat/completions"
+_OLLAMA_URL = OLLAMA_BASE_URL + "/api/chat"
 _DEFAULT_MODEL = "gpt-4.1-mini"
 _DEFAULT_UNKNOWN = "Бұл команданы түсінбедім. «Көмек» деп айтыңыз."
 _MAX_TEXT = 10000
+_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class _BoundedModel(BaseModel):
@@ -293,13 +297,20 @@ class AssistantService:
         if not isinstance(text, str) or not text.strip() or len(text) > _MAX_TEXT:
             return {"intent": "unknown", "message": "Сұрау 1–10000 таңба аралығында болуы керек.",
                     "payload": {}, "engine": "rules"}
-        key = self.preferences.secret("llm_api_key")
+        # Actual Preferences supplies its Ollama default. Preserve compatibility
+        # with older integrations that only supplied the original OpenAI settings.
+        provider = self.preferences.get("llm_provider", "openai")
         if self.preferences.get("llm_enabled", True) is not True:
-            error = _OnlineError("llm_disabled", "Онлайн көмекші өшірілген. Параметрлерде оны қосыңыз.")
-        elif not isinstance(key, str) or not key.strip():
-            error = _OnlineError("llm_not_configured", "Еркін сөйлесу үшін параметрлерде OpenAI API кілтін қосыңыз.")
+            error = _OnlineError("llm_disabled", "Еркін сөйлесу моделі өшірілген. Параметрлерде оны қосыңыз.")
         else:
             try:
+                if provider == "ollama":
+                    return await self._ollama(text, volume, language, history, context)
+                if provider != "openai":
+                    raise _OnlineError("llm_provider", "Модель провайдері дұрыс емес. Ollama немесе OpenAI таңдаңыз.")
+                key = self.preferences.secret("llm_api_key")
+                if not isinstance(key, str) or not key.strip():
+                    raise _OnlineError("llm_not_configured", "Еркін сөйлесу үшін параметрлерде OpenAI API кілтін қосыңыз.")
                 return await self._online(text, volume, language, history, context, key.strip())
             except _OnlineError as exc:
                 error = exc
@@ -309,10 +320,8 @@ class AssistantService:
         return {"intent": "unknown", "message": error.message,
                 "payload": {}, "engine": "unavailable", "error": error.code}
 
-    async def _online(self, text, volume, language, history, context, key) -> dict:
-        model = self.preferences.get("llm_model", _DEFAULT_MODEL)
-        if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}", model):
-            raise _OnlineError("llm_model", "Параметрлерде дұрыс OpenAI модель атауын таңдаңыз.")
+    @staticmethod
+    def _messages(text, volume, language, history, context) -> list[dict]:
         language = language if language in {"kk-KZ", "ru-RU"} else "kk-KZ"
         try:
             volume = max(0, min(100, int(volume)))
@@ -324,46 +333,124 @@ class AssistantService:
             "language": language, "current_volume": volume,
             "context_data": _safe_context(context), "current_user_request": text,
         }, ensure_ascii=False)})
+        return messages
+
+    @staticmethod
+    async def _bounded_post(client, url: str, *, provider: str, **kwargs) -> tuple[int, bytes]:
+        async with client.stream("POST", url, **kwargs) as response:
+            body = bytearray()
+            async for chunk in response.aiter_bytes():
+                if len(body) + len(chunk) > _MAX_RESPONSE_BYTES:
+                    raise _OnlineError(
+                        "ollama_invalid_response" if provider == "ollama" else "llm_invalid_response",
+                        "Модель жауабы тым үлкен. Сұрауды қысқартып қайталап көріңіз.",
+                    )
+                body.extend(chunk)
+            return response.status_code, bytes(body)
+
+    @staticmethod
+    def _validated_result(content: object, engine: str) -> dict:
+        try:
+            if not isinstance(content, str) or len(content) > 50000:
+                raise ValueError("invalid reply")
+            plan = _ModelResponse.model_validate_json(content)
+        except (ValueError, TypeError, ValidationError):
+            raise _OnlineError(
+                "ollama_invalid_response" if engine == "ollama" else "llm_invalid_response",
+                "Жергілікті модельдің жауабы тексеруден өтпеді. Сұрауды нақтылап қайталап көріңіз."
+                if engine == "ollama" else
+                "Онлайн көмекшінің жауабы тексеруден өтпеді. Сұрауды нақтылап қайталап көріңіз.",
+            ) from None
+        message = plan.message
+        if plan.clarification and plan.clarification not in message:
+            message += " " + plan.clarification
+        if plan.actions:
+            return {"intent": "plan", "message": message,
+                    "payload": {"actions": [action.model_dump() for action in plan.actions]}, "engine": engine}
+        return {"intent": "chat", "message": message, "payload": {}, "engine": engine}
+
+    async def _ollama(self, text, volume, language, history, context) -> dict:
+        model = self.preferences.get("ollama_model", DEFAULT_OLLAMA_MODEL)
+        if not valid_model_name(model):
+            raise _OnlineError("ollama_model", "Параметрлерде дұрыс Ollama модель атауын таңдаңыз.")
+        # Discovery rejects remote-backed aliases as well as advertised cloud
+        # model names. Never send private conversation to a cloud-backed model.
+        readiness = await OllamaService(self.preferences).status()
+        if not readiness.get("available"):
+            raise _OnlineError("ollama_unavailable", readiness.get("error", "Ollama іске қосылмаған. Жергілікті Ollama қолданбасын іске қосыңыз."))
+        if not readiness.get("model_ready") or readiness.get("selected_model") != model:
+            raise _OnlineError("ollama_model_missing", readiness.get("error", "Таңдалған жергілікті Ollama моделі орнатылмаған. Модельді тексеріңіз."))
+        try:
+            # Ignore HTTP_PROXY/ALL_PROXY so private conversation cannot leave
+            # the machine through an environment-configured proxy.
+            async with asyncio.timeout(180):
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(180.0, connect=3.0, write=10.0, pool=5.0),
+                    trust_env=False, follow_redirects=False,
+                ) as client:
+                    status, body = await self._bounded_post(client, _OLLAMA_URL, provider="ollama", json={
+                        "model": model,
+                        "messages": self._messages(text, volume, language, history, context),
+                        "format": _ModelResponse.model_json_schema(), "stream": False,
+                        "options": {"temperature": 0.2, "seed": 0, "num_predict": 1536, "num_ctx": 8192},
+                    })
+        except (httpx.TimeoutException, asyncio.TimeoutError):
+            raise _OnlineError("ollama_timeout", "Ollama моделі уақытында жауап бермеді. Алғашқы жүктеу баяу болуы мүмкін; қайта көріңіз немесе жеңілірек модель таңдаңыз.") from None
+        except httpx.ConnectError:
+            raise _OnlineError("ollama_not_running", "Ollama іске қосылмаған немесе қолжетімсіз. Компьютерде Ollama қолданбасын іске қосыңыз.") from None
+        except (httpx.HTTPError, OSError, ValueError):
+            raise _OnlineError("ollama_connection", "Ollama байланысы үзілді. Жергілікті Ollama қолданбасын тексеріп, қайта көріңіз.") from None
+        if status == 404:
+            raise _OnlineError("ollama_model_missing", f"Ollama моделі табылмады. Терминалда «ollama pull {model}» командасымен модельді жүктеңіз.")
+        if status == 400:
+            raise _OnlineError("ollama_request", "Ollama сұрауды қабылдамады. Модель атауын тексеріп, Ollama қолданбасын жаңартыңыз.")
+        if status != 200:
+            raise _OnlineError("ollama_unavailable", "Ollama модельді іске қоса алмады. Қолжетімді жад пен жергілікті Ollama күйін тексеріңіз.")
+        try:
+            envelope = json.loads(body)
+            if envelope.get("done") is not True or envelope.get("done_reason") in {"length", "content_filter"}:
+                raise ValueError("incomplete reply")
+            content = envelope["message"]["content"]
+        except (ValueError, TypeError, KeyError, AttributeError):
+            raise _OnlineError("ollama_invalid_response", "Ollama толық әрі дұрыс жауап бермеді. Сұрауды нақтылап қайталап көріңіз.") from None
+        return self._validated_result(content, "ollama")
+
+    async def _online(self, text, volume, language, history, context, key) -> dict:
+        model = self.preferences.get("llm_model", _DEFAULT_MODEL)
+        if not isinstance(model, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}", model):
+            raise _OnlineError("llm_model", "Параметрлерде дұрыс OpenAI модель атауын таңдаңыз.")
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(20.0, connect=5.0),
                                          verify=True, follow_redirects=False) as client:
-                response = await client.post(_API_URL, headers={"Authorization": f"Bearer {key}"}, json={
-                    "model": model, "messages": messages,
+                status, body = await self._bounded_post(client, _API_URL, provider="openai",
+                    headers={"Authorization": f"Bearer {key}"}, json={
+                    "model": model, "messages": self._messages(text, volume, language, history, context),
                     "response_format": {"type": "json_object"},
                     "temperature": 0.2, "max_tokens": 1800,
                 })
         except (httpx.HTTPError, OSError, ValueError):
             raise _OnlineError("llm_network", "Онлайн көмекшіге қосыла алмадым. Интернет байланысын тексеріңіз.") from None
-        if response.status_code in {401, 403}:
+        if status in {401, 403}:
             raise _OnlineError("llm_auth", "OpenAI API кілті қабылданбады. Параметрлердегі кілт пен рұқсаттарды тексеріңіз.")
-        if response.status_code == 429:
+        if status == 429:
             try:
-                details = response.json().get("error", {})
+                details = json.loads(body).get("error", {})
                 quota = details.get("code") == "insufficient_quota" or details.get("type") == "insufficient_quota"
             except (ValueError, AttributeError):
                 quota = False
             if quota:
                 raise _OnlineError("llm_quota", "OpenAI API лимиті немесе балансы таусылған. API төлемі мен лимитін тексеріңіз.")
             raise _OnlineError("llm_rate_limit", "Онлайн көмекші сұрау лимитіне жетті. Сәлден кейін қайталап көріңіз.")
-        if response.status_code in {400, 404}:
+        if status in {400, 404}:
             raise _OnlineError("llm_model", "OpenAI модель параметрлері қабылданбады. Модель атауы мен оған қолжетімділікті тексеріңіз.")
-        if response.status_code != 200:
+        if status != 200:
             raise _OnlineError("llm_unavailable", "Онлайн көмекші уақытша қолжетімсіз. Сәлден кейін қайталап көріңіз.")
         try:
-            envelope = response.json()
+            envelope = json.loads(body)
             choice = envelope["choices"][0]
             if choice.get("finish_reason") in {"length", "content_filter"}:
                 raise ValueError("incomplete reply")
             content = choice["message"]["content"]
-            if not isinstance(content, str) or len(content) > 50000:
-                raise ValueError("invalid reply")
-            plan = _ModelResponse.model_validate_json(content)
         except (ValueError, TypeError, KeyError, IndexError, AttributeError, ValidationError):
             raise _OnlineError("llm_invalid_response", "Онлайн көмекшінің жауабы тексеруден өтпеді. Сұрауды нақтылап қайталап көріңіз.") from None
-        message = plan.message
-        if plan.clarification and plan.clarification not in message:
-            message += " " + plan.clarification
-        if plan.actions:
-            return {"intent": "plan", "message": message,
-                    "payload": {"actions": [action.model_dump() for action in plan.actions]}, "engine": "openai"}
-        return {"intent": "chat", "message": message, "payload": {}, "engine": "openai"}
+        return self._validated_result(content, "openai")

@@ -10,10 +10,14 @@ from pathlib import Path
 import re
 import threading
 
+from .ollama import DEFAULT_OLLAMA_MODEL, valid_model_name
+
 
 DEFAULTS = {
     "llm_enabled": True,
+    "llm_provider": "ollama",
     "llm_model": "gpt-4.1-mini",
+    "ollama_model": DEFAULT_OLLAMA_MODEL,
     "tts_provider": "edge",
     "tts_voice": "kk-KZ-DauletNeural",
     "elevenlabs_voice_id": "",
@@ -112,6 +116,10 @@ class Preferences:
     def _validate(settings: dict) -> None:
         if type(settings["llm_enabled"]) is not bool:
             raise SettingsError("Модельді қосу баптауы дұрыс емес.")
+        if not isinstance(settings["llm_provider"], str) or settings["llm_provider"] not in {"ollama", "openai"}:
+            raise SettingsError("Ollama немесе OpenAI провайдерін таңдаңыз.")
+        if not valid_model_name(settings["ollama_model"]):
+            raise SettingsError("Жергілікті Ollama моделінің атауы дұрыс емес. Мысалы: qwen2.5:3b.")
         if not isinstance(settings["llm_model"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", settings["llm_model"]):
             raise SettingsError("GPT моделінің атауы дұрыс емес.")
         if settings["tts_provider"] not in {"edge", "elevenlabs", "system"}:

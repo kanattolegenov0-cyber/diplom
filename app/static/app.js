@@ -28,7 +28,7 @@
     youtubePromise: null, commandBusy: false, browserBusy: false,
     entries: [], reminders: [], notifiedReminders: new Set(),
     history: [], lastEngine: null, settingsPromise: null,
-    settings: { llm_enabled: true, llm_model: 'gpt-4.1-mini', llm_configured: false, tts_provider: 'edge', tts_voice: 'kk-KZ-DauletNeural', elevenlabs_configured: false, elevenlabs_voice_id: '', elevenlabs_model: 'eleven_v3', speech_style: 'serious', speech_rate: -8, speech_pitch: -8, wake_enabled: true, wake_language: 'kk-KZ' },
+    settings: { llm_enabled: true, llm_provider: 'ollama', ollama_model: 'qwen2.5:3b', llm_model: 'gpt-4.1-mini', llm_configured: false, tts_provider: 'edge', tts_voice: 'kk-KZ-DauletNeural', elevenlabs_configured: false, elevenlabs_voice_id: '', elevenlabs_model: 'eleven_v3', speech_style: 'serious', speech_rate: -8, speech_pitch: -8, wake_enabled: true, wake_language: 'kk-KZ' },
     speechGeneration: 0, speechAbort: null, speechAudio: null, speechUrl: null,
     lastSpeechText: '', lastSpeechLanguage: 'kk-KZ',
     speechBusy: false, wakeStatus: null, wakeCursor: 0, wakeSeen: new Set(), wakePrimed: false,
@@ -36,6 +36,7 @@
     wakeActivityPromise: null, wakeActivityLast: null, wakeActivityForce: false, closing: false,
     playlist: [], playlistQueue: [], playlistQueueIndex: -1, playlistQueueActive: false,
     listenSession: null,
+    ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
   };
   const viewNames = { home: 'Басты бет', music: 'Музыка', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
@@ -388,11 +389,77 @@
   }
 
   function renderEngineStatus() {
-    const enabled = Boolean(state.settings.llm_enabled && state.settings.llm_configured);
     const badge = $('#engine-status');
-    badge.classList.toggle('ai-ready', enabled);
-    badge.textContent = enabled ? `${state.lastEngine === 'openai' ? 'GPT' : 'GPT дайын'} · ${state.settings.llm_model}` : 'Жергілікті пәрмендер';
-    badge.title = enabled ? 'GPT қосылған. Нақты пәрмендер жергілікті де орындала алады.' : 'GPT үшін Баптауларға OpenAI API кілтін қосыңыз.';
+    let ready = false;
+    let label = 'Жергілікті пәрмендер';
+    let description = 'AI өшірулі. Негізгі пәрмендер жұмыс істейді.';
+    if (state.settings.llm_enabled && state.settings.llm_provider === 'ollama') {
+      ready = Boolean(state.ollamaStatus?.available && state.ollamaStatus?.model_ready && state.ollamaStatus.selected_model === state.settings.ollama_model);
+      label = ready ? `Ollama · ${state.settings.ollama_model}` : state.ollamaChecking ? 'Ollama тексерілуде' : 'Ollama дайын емес';
+      description = ready ? 'AI осы компьютердегі Ollama моделін қолданады. API кілті қажет емес.' : 'Баптаулардан Ollama-ны және орнатылған модельді тексеріңіз. API кілті керек емес.';
+    } else if (state.settings.llm_enabled && state.settings.llm_provider === 'openai') {
+      ready = Boolean(state.settings.llm_configured);
+      label = ready ? `OpenAI · ${state.settings.llm_model}` : 'OpenAI кілті қосылмаған';
+      description = ready ? 'AI ақылы OpenAI API қызметін қолданады.' : 'OpenAI қолдану үшін API кілтін қосыңыз немесе тегін Ollama-ны таңдаңыз.';
+    }
+    badge.classList.toggle('ai-ready', ready); badge.textContent = label; badge.title = description;
+    $('#settings-status').textContent = state.settings.llm_enabled ? ready ? (state.settings.llm_provider === 'ollama' ? 'Ollama дайын' : 'OpenAI қосылған') : 'AI баптауын тексеріңіз' : 'Негізгі пәрмендер дайын';
+  }
+  function validOllamaModel(model) {
+    return typeof model === 'string' && model.length <= 120
+      && /^[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?$/.test(model)
+      && !/(?:-cloud|:cloud)$/i.test(model);
+  }
+  function updateLLMProviderFields() {
+    const ollama = $('#llm-provider').value === 'ollama';
+    $('#ollama-fields').hidden = !ollama; $('#openai-fields').hidden = ollama;
+    $('#ollama-model').required = ollama;
+    $('#ollama-model').disabled = !ollama;
+    $('#llm-model').required = !ollama;
+    $('#llm-model').disabled = ollama;
+    renderOllamaStatus();
+  }
+  function renderOllamaStatus() {
+    const status = state.ollamaStatus;
+    const model = $('#ollama-model').value.trim();
+    const changed = model !== state.settings.ollama_model;
+    const installed = Boolean(status?.models?.includes(model));
+    const ready = Boolean(status?.available && status?.model_ready && status.selected_model === model);
+    let description = 'Ollama күйі әлі тексерілмеді.';
+    let error = false;
+    if (state.ollamaChecking) description = 'Ollama және орнатылған модельдер тексерілуде…';
+    else if (status && !status.available) { description = `Ollama іске қосылмаған немесе қолжетімсіз. ${status.error || 'Ollama-ны іске қосып, қайта тексеріңіз.'}`; error = true; }
+    else if (changed) description = installed ? 'Бұл модель орнатылған. Қолдану үшін таңдауыңызды сақтаңыз.' : 'Модель таңдауы сақталмаған. Модельді жүктеп, баптауларды сақтаңыз.';
+    else if (ready) description = `Дайын: ${model}. API кілті қажет емес.`;
+    else if (status?.available) { description = `Ollama іске қосылған, бірақ ${model || 'таңдалған'} моделі дайын емес. Оны терминалда жүктеңіз.`; error = true; }
+    $('#ollama-status').textContent = description;
+    $('#ollama-status').classList.toggle('error', error);
+    $('#ollama-refresh').disabled = state.ollamaChecking;
+    $('#ollama-pull-command').textContent = `ollama pull ${validOllamaModel(model) ? model : 'qwen2.5:3b'}`;
+    $('#ollama-setup').hidden = ready && !changed;
+    $('#ollama-setup').querySelector('p').hidden = Boolean(status?.available);
+  }
+  async function checkOllamaStatus() {
+    const id = ++state.ollamaCheckId;
+    state.ollamaChecking = true; renderOllamaStatus(); renderEngineStatus();
+    try {
+      const result = await api('/api/ollama/status', { timeout: 12000 });
+      if (id !== state.ollamaCheckId) return;
+      state.ollamaStatus = {
+        available: Boolean(result.available), model_ready: Boolean(result.model_ready),
+        selected_model: String(result.selected_model || state.settings.ollama_model),
+        models: Array.isArray(result.models) ? result.models.filter((model) => typeof model === 'string').slice(0, 200) : [],
+        error: typeof result.error === 'string' ? result.error : '',
+      };
+      const list = $('#ollama-models'); list.replaceChildren();
+      for (const model of state.ollamaStatus.models) {
+        const option = document.createElement('option'); option.value = model; list.append(option);
+      }
+    } catch (error) {
+      if (id === state.ollamaCheckId) state.ollamaStatus = { available: false, models: [], selected_model: state.settings.ollama_model, model_ready: false, error: error.message };
+    } finally {
+      if (id === state.ollamaCheckId) { state.ollamaChecking = false; renderOllamaStatus(); renderEngineStatus(); }
+    }
   }
   function updateProviderFields() {
     const provider = $('#tts-provider').value;
@@ -402,9 +469,13 @@
     $('#voice-tuning').hidden = provider !== 'edge';
   }
   function acceptSettings(settings) {
-    const fields = ['llm_enabled', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model', 'speech_style', 'speech_rate', 'speech_pitch', 'wake_enabled', 'wake_language'];
+    const previousModel = state.settings.ollama_model;
+    const previousProvider = state.settings.llm_provider;
+    const fields = ['llm_enabled', 'llm_provider', 'ollama_model', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model', 'speech_style', 'speech_rate', 'speech_pitch', 'wake_enabled', 'wake_language'];
     for (const field of fields) if (Object.hasOwn(settings, field)) state.settings[field] = settings[field];
     $('#llm-enabled').checked = Boolean(state.settings.llm_enabled);
+    $('#llm-provider').value = state.settings.llm_provider || 'ollama';
+    $('#ollama-model').value = state.settings.ollama_model || 'qwen2.5:3b';
     $('#llm-model').value = state.settings.llm_model || 'gpt-4.1-mini';
     $('#tts-provider').value = state.settings.tts_provider || 'edge';
     $('#tts-voice').value = state.settings.tts_voice || 'kk-KZ-DauletNeural';
@@ -421,30 +492,34 @@
     $('#clear-elevenlabs-key').checked = false;
     $('#clear-llm-key').disabled = !state.settings.llm_configured;
     $('#clear-elevenlabs-key').disabled = !state.settings.elevenlabs_configured;
-    $('#settings-status').textContent = state.settings.llm_enabled && state.settings.llm_configured ? 'GPT қосылған' : 'Негізгі пәрмендер дайын';
-    updateProviderFields(); renderEngineStatus(); renderWakeStatus();
+    if (previousModel !== state.settings.ollama_model || previousProvider !== state.settings.llm_provider) state.lastEngine = null;
+    updateLLMProviderFields(); updateProviderFields(); renderEngineStatus(); renderWakeStatus();
   }
-  async function loadSettings() { acceptSettings(await api('/api/settings')); }
+  async function loadSettings() { acceptSettings(await api('/api/settings')); if (state.settings.llm_provider === 'ollama') checkOllamaStatus(); }
   async function saveSettings() {
     const result = $('#settings-result');
     result.classList.remove('error'); result.textContent = 'Баптаулар сақталуда…';
     const body = {
-      llm_enabled: $('#llm-enabled').checked, llm_model: $('#llm-model').value.trim(),
+      llm_enabled: $('#llm-enabled').checked, llm_provider: $('#llm-provider').value,
+      ollama_model: $('#llm-provider').value === 'ollama' ? $('#ollama-model').value.trim() : state.settings.ollama_model,
+      llm_model: $('#llm-provider').value === 'openai' ? $('#llm-model').value.trim() : state.settings.llm_model,
       tts_provider: $('#tts-provider').value, tts_voice: $('#tts-voice').value,
       elevenlabs_voice_id: $('#elevenlabs-voice-id').value.trim(),
       elevenlabs_model: $('#elevenlabs-model').value.trim() || 'eleven_v3',
-      llm_api_key: $('#llm-api-key').value.trim(), elevenlabs_api_key: $('#elevenlabs-api-key').value.trim(),
-      clear_llm_api_key: $('#clear-llm-key').checked, clear_elevenlabs_api_key: $('#clear-elevenlabs-key').checked,
+      elevenlabs_api_key: $('#elevenlabs-api-key').value.trim(), clear_elevenlabs_api_key: $('#clear-elevenlabs-key').checked,
       speech_style: $('#speech-style').value, speech_rate: Number($('#speech-rate').value), speech_pitch: Number($('#speech-pitch').value),
       wake_enabled: $('#wake-enabled').checked, wake_language: $('#wake-language').value,
     };
+    if (body.llm_provider === 'openai') { body.llm_api_key = $('#llm-api-key').value.trim(); body.clear_llm_api_key = $('#clear-llm-key').checked; }
     try {
+      if (!validOllamaModel(body.ollama_model)) throw new Error('Ollama моделінің дұрыс атауын жазыңыз (мысалы, qwen2.5:3b). URL қажет емес.');
       if ((body.clear_llm_api_key && body.llm_api_key) || (body.clear_elevenlabs_api_key && body.elevenlabs_api_key)) throw new Error('Кілтті жою немесе жаңарту әрекетінің бірін таңдаңыз.');
       if (!Number.isInteger(body.speech_rate) || body.speech_rate < -30 || body.speech_rate > 20 || !Number.isInteger(body.speech_pitch) || body.speech_pitch < -20 || body.speech_pitch > 10) throw new Error('Дауыс жылдамдығы −30…20, үн биіктігі −20…10 аралығында болуы керек.');
       const settings = await post('/api/settings', body);
       stopSpeech(); acceptSettings(settings);
       $('#llm-api-key').value = ''; $('#elevenlabs-api-key').value = '';
       result.textContent = 'Баптаулар сақталды. Таңдалған дауысты тексеріп көріңіз.';
+      if (state.settings.llm_provider === 'ollama') checkOllamaStatus();
       if (state.health?.desktop_mode) pollWakeStatus();
     } catch (error) { result.classList.add('error'); result.textContent = error.message; throw error; }
   }
@@ -1024,14 +1099,16 @@
     stopSpeech();
     message(text, 'user'); $('#command-input').value = '';
     setAssistantState('Ойыңызды әрекетке айналдырамын…');
+    $('#command-progress').hidden = false;
+    $('#command-progress').textContent = state.settings.llm_provider === 'ollama' && state.settings.llm_enabled ? 'Жергілікті көмекші жауап дайындауда. Модельдің алғашқы жүктелуі бірнеше минут алуы мүмкін…' : 'Көмекші пәрменіңізді өңдеп жатыр…';
     try {
       await syncWakeActivity();
-      const result = await post('/api/command', { text, volume: state.volume, language: state.language, history });
+      const result = await post('/api/command', { text, volume: state.volume, language: state.language, history }, { timeout: state.settings.llm_provider === 'ollama' ? 210000 : 45000 });
       state.lastEngine = result.engine || null; renderEngineStatus();
       const reply = result.intent === 'plan' ? await executePlan(result) : await executeIntent(result.intent, result.payload || {}, result.message || 'Пәрмен қабылданды.');
       message(reply);
     } catch (error) { message(error.message, 'assistant', true); }
-    finally { state.commandBusy = false; send.disabled = false; setAssistantState(state.listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын'); await syncWakeActivity(true); }
+    finally { state.commandBusy = false; send.disabled = false; $('#command-progress').hidden = true; setAssistantState(state.listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын'); await syncWakeActivity(true); }
   }
   async function withFormBusy(form, operation) {
     const button = form.querySelector('button[type="submit"]');
@@ -1074,6 +1151,9 @@
     else if (state.lastSpeechText) speak(state.lastSpeechText, state.lastSpeechLanguage);
   });
   $('#tts-provider').addEventListener('change', updateProviderFields);
+  $('#llm-provider').addEventListener('change', () => { updateLLMProviderFields(); if ($('#llm-provider').value === 'ollama') checkOllamaStatus(); });
+  $('#ollama-model').addEventListener('input', renderOllamaStatus);
+  $('#ollama-refresh').addEventListener('click', checkOllamaStatus);
   $('#speech-style').addEventListener('change', (event) => {
     const serious = event.target.value === 'serious';
     $('#speech-rate').value = serious ? '-8' : '0';

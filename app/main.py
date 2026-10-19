@@ -17,6 +17,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .browser import BrowserError, BrowserService
 from .assistant import AssistantService, validate_action
 from .music import MusicError, MusicService
+from .ollama import OllamaService
 from .preferences import Preferences
 from .speech import SpeechError, SpeechService
 from .storage import Store
@@ -73,7 +74,9 @@ class WakeActivityInput(BaseModel):
 
 class SettingsInput(BaseModel):
     llm_enabled: bool | None = None
+    llm_provider: Literal["ollama", "openai"] | None = None
     llm_model: str | None = Field(default=None, max_length=100)
+    ollama_model: str | None = Field(default=None, min_length=1, max_length=120)
     tts_provider: Literal["edge", "elevenlabs", "system"] | None = None
     tts_voice: Literal["kk-KZ-DauletNeural", "kk-KZ-AigulNeural"] | None = None
     speech_style: Literal["serious", "natural"] | None = None
@@ -110,7 +113,7 @@ def execute_local_action(result: dict, store: Store) -> dict:
 
 
 def create_app(data_dir: Path | None = None, browser=None, music=None, assistant=None,
-               speech=None, wake=None, wake_model=None) -> FastAPI:
+               speech=None, wake=None, wake_model=None, ollama=None) -> FastAPI:
     browser = browser or BrowserService()
     music = music or MusicService()
 
@@ -120,6 +123,7 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
         application.state.store = Store(directory)
         application.state.preferences = Preferences(directory)
         application.state.assistant = assistant or AssistantService(application.state.preferences)
+        application.state.ollama = ollama or OllamaService(application.state.preferences)
         application.state.speech = speech or SpeechService(application.state.preferences)
         application.state.wake_model = wake_model or ModelManager(directory)
         application.state.wake = wake or WakeService(
@@ -183,6 +187,10 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
     @application.get("/api/settings")
     async def settings(request: Request):
         return request.app.state.preferences.public()
+
+    @application.get("/api/ollama/status")
+    async def ollama_status(request: Request):
+        return await request.app.state.ollama.status()
 
     @application.post("/api/settings")
     async def update_settings(body: SettingsInput, request: Request):

@@ -205,6 +205,24 @@ def test_same_utterance_keeps_command_first_words_without_google(harness):
     assert not harness.voice_calls
 
 
+def test_same_utterance_uses_local_retranscription_after_releasing_microphone(harness):
+    calls = []
+    def retranscribe(pcm, language, fallback, *, stop_event):
+        assert all(stream.closed for stream in harness.streams)
+        assert not stop_event.is_set()
+        calls.append((pcm, language, fallback))
+        return "Moldanazar әнін қос"
+    harness.voice.transcribe_wake = retranscribe
+    wake = harness.service()
+    wake.start()
+    harness.feed("жай әңгіме")
+    harness.feed("аян молдан азар әнін қос")
+    wait_for(lambda: len(wake.status()["events"]) == 2)
+    assert calls == [("аян молдан азар әнін қос".encode(), "kk-KZ", "молдан азар әнін қос")]
+    assert wake.status()["events"][1]["text"] == "Moldanazar әнін қос"
+    assert not harness.voice_calls
+
+
 def test_command_pauses_until_acknowledged_and_duplicate_is_suppressed(harness):
     wake = harness.service()
     wake.start()

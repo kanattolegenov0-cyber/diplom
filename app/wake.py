@@ -37,7 +37,7 @@ class WakeService:
     """Own one microphone worker and expose bounded events for the local UI.
 
     Vosk sees background PCM locally. Only a wake-only final utterance invokes
-    voice.listen; a same-utterance command uses its existing local transcript.
+    voice.listen; Whisper can re-transcribe the bounded same-utterance audio locally.
     A command automatically pauses capture until set_busy(False) acknowledges
     completion. Model installation is always an explicit, separate operation.
     """
@@ -208,6 +208,7 @@ class WakeService:
             model = vosk.Model(str(path))
             audio = pyaudio.PyAudio()
             recognizer: Any = None
+            utterance = bytearray()
             while not self._stop_event.is_set():
                 if self._paused():
                     release_capture()
@@ -229,6 +230,7 @@ class WakeService:
                         with self._state_lock:
                             self._stream = stream
                         recognizer = vosk.KaldiRecognizer(model, _SAMPLE_RATE)
+                        utterance.clear()
                     except Exception:
                         release_capture()
                         raise
@@ -250,8 +252,15 @@ class WakeService:
                     raise
                 if self._stop_event.is_set() or self._paused():
                     continue
-                if not pcm or not recognizer.AcceptWaveform(pcm):
+                if not pcm:
                     continue
+                utterance.extend(pcm)
+                # Keep at most 25 seconds in memory, never write wake audio to disk.
+                del utterance[:-_SAMPLE_RATE * 2 * 25]
+                if not recognizer.AcceptWaveform(pcm):
+                    continue
+                command_audio = bytes(utterance)
+                utterance.clear()
                 transcript = json.loads(recognizer.Result()).get("text", "")
                 tail = extract_wake_command(transcript)
                 if tail is None:
@@ -265,14 +274,16 @@ class WakeService:
                 # same microphone lock. Background PCM is never sent to Google.
                 release_capture()
                 self._emit("wake", "Аян")
-                if tail:
+                if tail and not hasattr(self.voice, "transcribe_wake"):
                     command = tail
                 else:
                     with self._state_lock:
                         self._in_command = True
-                        self._phase = "calibrating"
+                        self._phase = "recognizing" if tail else "calibrating"
                     try:
-                        command = self._listen_command()
+                        command = (self.voice.transcribe_wake(command_audio, self._language, tail,
+                                                             stop_event=self._capture_cancel)
+                                   if tail else self._listen_command())
                     except Exception as exc:
                         if self._stop_event.is_set() or self._busy.is_set():
                             continue

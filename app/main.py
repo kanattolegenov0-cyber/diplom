@@ -25,6 +25,8 @@ from .storage import Store
 from .wake import WakeService
 from .wake_model import ModelError, ModelManager
 from . import voice
+from .transcription import TranscriptionService
+from .voice_correction import CorrectionService
 
 
 class CommandInput(BaseModel):
@@ -61,6 +63,11 @@ class SpeechInput(BaseModel):
     language: Literal["kk-KZ", "ru-RU"] = "kk-KZ"
 
 
+class CorrectionInput(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+    language: Literal["kk-KZ", "ru-RU"] = "kk-KZ"
+
+
 class ListenInput(BaseModel):
     video_id: str = Field(pattern=r"^(?:[A-Za-z0-9_-]{11}|sc:[0-9]{1,20})$")
     title: str = Field(min_length=1, max_length=300)
@@ -74,6 +81,11 @@ class WakeActivityInput(BaseModel):
 
 
 class SettingsInput(BaseModel):
+    stt_provider: Literal["auto", "google", "whisper"] | None = None
+    stt_model: Literal["small", "medium", "large-v3"] | None = None
+    stt_review: bool | None = Field(default=None, strict=True)
+    stt_ollama_correction: bool | None = Field(default=None, strict=True)
+    stt_dictionary: str | None = Field(default=None, max_length=6000)
     llm_enabled: bool | None = None
     llm_provider: Literal["ollama", "openai"] | None = None
     llm_model: str | None = Field(default=None, max_length=100)
@@ -127,9 +139,11 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
         application.state.assistant = assistant or AssistantService(application.state.preferences)
         application.state.ollama = ollama or OllamaService(application.state.preferences)
         application.state.speech = speech or SpeechService(application.state.preferences)
+        application.state.transcription = TranscriptionService(application.state.preferences, directory)
+        application.state.correction = CorrectionService(application.state.preferences)
         application.state.wake_model = wake_model or ModelManager(directory)
         application.state.wake = wake or WakeService(
-            application.state.preferences, voice, application.state.wake_model)
+            application.state.preferences, application.state.transcription, application.state.wake_model)
         try:
             if os.environ.get("AYAN_DESKTOP_MODE") == "1" and application.state.preferences.get("wake_enabled"):
                 await asyncio.to_thread(application.state.wake.start,
@@ -293,11 +307,11 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
             raise HTTPException(400, str(exc)) from exc
 
     @application.post("/api/voice/listen")
-    async def voice_listen(body: VoiceInput):
+    async def voice_listen(body: VoiceInput, request: Request):
         if os.environ.get("AYAN_DESKTOP_MODE") != "1":
             raise HTTPException(409, "Компьютер микрофоны тек desktop режимінде іске қосылады.")
         try:
-            return {"text": await asyncio.to_thread(voice.listen, body.language)}
+            return {"text": await asyncio.to_thread(request.app.state.transcription.listen, body.language)}
         except voice.VoiceError as exc:
             raise HTTPException(503, str(exc)) from exc
 
@@ -306,6 +320,16 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
         if os.environ.get("AYAN_DESKTOP_MODE") != "1":
             raise HTTPException(409, "Микрофон күйі тек desktop режимінде қолжетімді.")
         return voice.get_status()
+
+    @application.get("/api/voice/recognizer")
+    async def recognizer_status(request: Request):
+        return request.app.state.transcription.status()
+
+    @application.post("/api/voice/correct")
+    async def correct_voice(body: CorrectionInput, request: Request):
+        if not body.text.strip():
+            raise HTTPException(422, "Танылған мәтін бос.")
+        return await request.app.state.correction.correct(body.text, body.language)
 
     def require_desktop():
         if os.environ.get("AYAN_DESKTOP_MODE") != "1":

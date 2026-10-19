@@ -1,0 +1,4 @@
+# Optional local speech recognition; no API key required.
+faster-whisper==1.2.1
+# faster-whisper's downloader still passes local_dir_use_symlinks (removed in Hub 1.x).
+huggingface-hub==0.36.0

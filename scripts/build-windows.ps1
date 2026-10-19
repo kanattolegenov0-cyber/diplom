@@ -69,6 +69,15 @@ $BuildArguments = @(
     "--hidden-import", "pyaudio",
     "desktop.py"
 )
+# Include optional local recognition only when explicitly installed.
+& $Python -c "import importlib.util; raise SystemExit(0 if importlib.util.find_spec('faster_whisper') else 1)"
+if ($LASTEXITCODE -eq 0) {
+    $BuildArguments = $BuildArguments[0..($BuildArguments.Count - 2)] + @(
+        "--collect-all", "faster_whisper", "--collect-all", "ctranslate2",
+        "--collect-all", "av", "--collect-all", "tokenizers",
+        "--collect-all", "huggingface_hub", "--collect-all", "onnxruntime", "desktop.py"
+    )
+}
 Invoke-Checked $Python $BuildArguments
 
 $Executable = Join-Path $ProjectRoot "dist\Ayan\Ayan.exe"

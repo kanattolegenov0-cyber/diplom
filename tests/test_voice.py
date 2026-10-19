@@ -86,11 +86,12 @@ def test_capture_readiness_precedes_recognition_and_resets(audio_modules):
         ("microphone", "calibrating"),
         ("open", "calibrating"),
         ("calibrate", "calibrating", 1.0),
-        ("listen", "listening", 8, 12),
+        ("listen", "listening", 8, 20),
         ("close", "listening"),
         ("recognize", "recognizing", "kk-KZ", "https://www.google.com/speech-api/v2/recognize"),
     ]
     assert audio_modules.state.recognizer.operation_timeout == 10
+    assert audio_modules.state.recognizer.pause_threshold == 1.2
     assert voice.get_status() == {"phase": "idle"}
 
 

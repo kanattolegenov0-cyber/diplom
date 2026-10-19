@@ -50,7 +50,7 @@ def available() -> bool:
     return bool(importlib.util.find_spec("speech_recognition") and importlib.util.find_spec("pyaudio"))
 
 
-def listen(language: str, *, stop_event=None) -> str:
+def listen(language: str, *, stop_event=None, transcribe=None) -> str:
     if language not in {"kk-KZ", "ru-RU"}:
         raise VoiceError("Қазақ немесе орыс тілін таңдаңыз.")
     if not available():
@@ -66,6 +66,9 @@ def listen(language: str, *, stop_event=None) -> str:
             raise VoiceError("Микрофон модулі орнатылмаған. Windows іске қосу нұсқаулығын пайдаланыңыз.") from exc
         recognizer = sr.Recognizer()
         recognizer.operation_timeout = 10
+        # Allow a natural pause without cutting the sentence into fragments.
+        recognizer.pause_threshold = 1.2
+        recognizer.non_speaking_duration = 0.5
         _set_phase("calibrating")
         try:
             with sr.Microphone() as source:
@@ -77,7 +80,7 @@ def listen(language: str, *, stop_event=None) -> str:
                 # The UI asks for silence until calibration completes and says “Айтыңыз”.
                 recognizer.adjust_for_ambient_noise(source, duration=1.0)
                 _set_phase("listening")
-                audio = recognizer.listen(source, timeout=8, phrase_time_limit=12)
+                audio = recognizer.listen(source, timeout=8, phrase_time_limit=20)
         except sr.WaitTimeoutError as exc:
             raise VoiceError(
                 "Дауыс естілмеді. Windows → Параметрлер → Жүйе → Дыбыс → Кіріс бөлімінде "
@@ -91,8 +94,9 @@ def listen(language: str, *, stop_event=None) -> str:
             raise VoiceCancelled("Микрофон тыңдауы тоқтатылды.")
         # Explicit push-to-talk or a local wake activation precedes this call.
         try:
-            result = recognizer.recognize_google(audio, language=language,
-                                                endpoint="https://www.google.com/speech-api/v2/recognize")
+            result = (transcribe(audio, language, stop_event=stop_event) if transcribe else
+                      recognizer.recognize_google(audio, language=language,
+                                                endpoint="https://www.google.com/speech-api/v2/recognize"))
             if stop_event is not None and stop_event.is_set():
                 raise VoiceCancelled("Микрофон тыңдауы тоқтатылды.")
             return result

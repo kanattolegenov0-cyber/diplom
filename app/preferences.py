@@ -11,6 +11,7 @@ import re
 import threading
 
 from .ollama import DEFAULT_OLLAMA_MODEL, valid_model_name
+from .voice_correction import parse_dictionary
 
 
 DEFAULTS = {
@@ -27,6 +28,11 @@ DEFAULTS = {
     "speech_pitch": -8,
     "wake_enabled": True,
     "wake_language": "kk-KZ",
+    "stt_provider": "auto",
+    "stt_model": "medium",
+    "stt_review": True,
+    "stt_ollama_correction": False,
+    "stt_dictionary": "",
 }
 SECRET_ENV = {
     "llm_api_key": ("AYAN_LLM_API_KEY", "OPENAI_API_KEY"),
@@ -114,6 +120,14 @@ class Preferences:
 
     @staticmethod
     def _validate(settings: dict) -> None:
+        if settings["stt_provider"] not in {"auto", "google", "whisper"} or settings["stt_model"] not in {"small", "medium", "large-v3"}:
+            raise SettingsError("Дауыс тану қызметі немесе Whisper моделі дұрыс емес.")
+        if type(settings["stt_review"]) is not bool or type(settings["stt_ollama_correction"]) is not bool:
+            raise SettingsError("Дауыс мәтінін түзету баптауы дұрыс емес.")
+        try:
+            parse_dictionary(settings["stt_dictionary"])
+        except ValueError as exc:
+            raise SettingsError(str(exc)) from exc
         if type(settings["llm_enabled"]) is not bool:
             raise SettingsError("Модельді қосу баптауы дұрыс емес.")
         if not isinstance(settings["llm_provider"], str) or settings["llm_provider"] not in {"ollama", "openai"}:

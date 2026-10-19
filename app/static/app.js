@@ -38,6 +38,7 @@
     listenSession: null, musicCandidates: [], failedMusicIds: new Set(), musicRecoveryBusy: false,
     playerSource: 'youtube', playbackGeneration: 0, musicQuery: '', soundcloudAttempted: false,
     soundcloudPromise: null, animeGeneration: 0,
+    voiceCorrecting: false, voiceReview: false, voiceGeneration: 0, voiceOriginal: '',
     ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
   };
   const viewNames = { home: 'Басты бет', music: 'Музыка', anime: 'Аниме', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
@@ -279,23 +280,71 @@
       };
       recognition.onresult = (event) => {
         const text = event.results[0]?.[0]?.transcript?.trim();
-        if (text) { $('#command-input').value = text; handleCommand(text); }
+        if (text) handleVoiceText(text, state.language).catch((error) => toast(error.message, true));
       };
       state.recognition = recognition;
     }
     if (state.nativeListening || wakeCommandCapture()) return;
     const native = Boolean(state.health?.desktop_mode && state.health?.native_voice_available);
     $('#mic-button').disabled = !native && !state.recognition;
+    if (state.voiceCorrecting || state.voiceReview) return;
     if (native) {
-      $('#voice-notice').textContent = 'Қолмен пәрмен беру үшін микрофонды басып, «Айтыңыз» белгісін күтіңіз. Дауыс тануға интернет керек. Тұрақты шақыру күйі төменде көрсетілген.';
+      $('#voice-notice').textContent = 'Микрофонды басып, «Айтыңыз» белгісін күтіңіз. Whisper орнатылса, дауыс компьютерде танылады; Google үшін интернет керек.';
     } else if (state.recognition) {
       $('#voice-notice').textContent = 'Дауыс тану Chrome/Edge және HTTPS/localhost-та қолжетімді. Тек микрофонды басқан кезде тыңдаймын.';
     } else {
       $('#voice-notice').textContent = 'Бұл ортада дауыс тану қолжетімсіз. Пәрменді жазыңыз немесе Chrome/Edge арқылы localhost-та ашыңыз.';
     }
   }
+  function clearVoiceReview() {
+    ++state.voiceGeneration;
+    state.voiceCorrecting = false; state.voiceReview = false;
+    $('#voice-review').hidden = true;
+  }
+  async function handleVoiceText(text, language) {
+    if (state.commandBusy || state.voiceCorrecting || state.voiceReview) return;
+    const generation = ++state.voiceGeneration;
+    state.voiceOriginal = text;
+    state.voiceCorrecting = true;
+    $('#command-input').value = text;
+    $('#voice-original').textContent = `Естілгені: ${text}`;
+    $('#voice-review-status').textContent = 'Танылған мәтінді тексеріп жатырмын…';
+    $('#voice-review').hidden = false; $('#voice-accept').disabled = true; $('#voice-use-original').disabled = true;
+    await syncWakeActivity();
+    let result;
+    try { result = await post('/api/voice/correct', { text, language }, { timeout: 55000 }); }
+    catch { result = { text, review: true, warning: 'Түзету қолжетімсіз. Мәтінді қолмен тексеріңіз.' }; }
+    if (generation !== state.voiceGeneration || state.closing) return;
+    state.voiceCorrecting = false;
+    $('#voice-use-original').disabled = false;
+    if ($('#command-input').value !== text) {
+      result = { text: $('#command-input').value, review: true, warning: 'Сіз өңдеген мәтін сақталды. Тексеріп, орындаңыз.' };
+    }
+    $('#command-input').value = result.text ?? text;
+    if (result.review || result.ai_changed) {
+      state.voiceReview = true;
+      $('#voice-accept').disabled = false;
+      $('#voice-review-status').textContent = result.warning || (result.ai_changed
+        ? 'Ollama түзету ұсынды. Жоғарыдағы мәтінді тексеріңіз не өңдеңіз, содан кейін орындаңыз.'
+        : 'Жоғарыдағы мәтінді тексеріңіз не өңдеңіз, содан кейін «Мәтінді орындау» басыңыз.');
+      $('#command-input').focus();
+      await syncWakeActivity();
+    } else await handleCommand(result.text || text);
+  }
+  async function checkRecognizer() {
+    const output = $('#stt-status');
+    output.textContent = 'Тексерілуде…';
+    try {
+      const result = await api('/api/voice/recognizer');
+      const context = state.health?.desktop_mode ? '' : 'Бұл — Windows тану баптауы. Браузер өз қызметін қолданады. ';
+      output.textContent = context + (result.active_provider === 'whisper'
+        ? (result.model_ready ? `Whisper ${result.model} орнатылған. Алғашқы тануда модель жадқа жүктеледі.` : `Whisper ${result.model} дайын емес. setup-whisper.bat арқылы орнатыңыз.`)
+        : `Google қолданылады. ${result.model_ready ? 'Whisper де орнатылған.' : `Whisper ${result.model} әлі орнатылмаған.`}`);
+    } catch (error) { output.textContent = error.message; }
+  }
   async function listen() {
     if (state.commandBusy || state.nativeListening) return;
+    clearVoiceReview();
     if (state.health?.desktop_mode && state.health?.native_voice_available) {
       state.nativeListening = true;
       stopSpeech();
@@ -345,13 +394,13 @@
       try {
         await syncWakeActivity();
         await post('/api/wake/stop', {});
-        const listenRequest = post('/api/voice/listen', { language: state.language }, { timeout: 45000 });
+        const listenRequest = post('/api/voice/listen', { language: state.language }, { timeout: 240000 });
         pollVoiceStatus();
         const result = await listenRequest;
         stopPolling();
         setListening(false);
         const text = String(result.text || '').trim();
-        if (text) { $('#command-input').value = text; await handleCommand(text); }
+        if (text) await handleVoiceText(text, state.language);
         else toast('Пәрмен анық естілмеді. Қайта айтыңыз немесе мәтінмен жазыңыз.', true);
       } catch (error) { toast(error.message, true); }
       finally {
@@ -473,7 +522,7 @@
   function acceptSettings(settings) {
     const previousModel = state.settings.ollama_model;
     const previousProvider = state.settings.llm_provider;
-    const fields = ['llm_enabled', 'llm_provider', 'ollama_model', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model', 'speech_style', 'speech_rate', 'speech_pitch', 'wake_enabled', 'wake_language'];
+    const fields = ['llm_enabled', 'llm_provider', 'ollama_model', 'llm_model', 'llm_configured', 'tts_provider', 'tts_voice', 'elevenlabs_configured', 'elevenlabs_voice_id', 'elevenlabs_model', 'speech_style', 'speech_rate', 'speech_pitch', 'wake_enabled', 'wake_language', 'stt_provider', 'stt_model', 'stt_review', 'stt_ollama_correction', 'stt_dictionary'];
     for (const field of fields) if (Object.hasOwn(settings, field)) state.settings[field] = settings[field];
     $('#llm-enabled').checked = Boolean(state.settings.llm_enabled);
     $('#llm-provider').value = state.settings.llm_provider || 'ollama';
@@ -488,6 +537,11 @@
     $('#speech-pitch').value = String(state.settings.speech_pitch ?? -8);
     $('#wake-enabled').checked = Boolean(state.settings.wake_enabled);
     $('#wake-language').value = state.settings.wake_language || 'kk-KZ';
+    $('#stt-provider').value = state.settings.stt_provider || 'auto';
+    $('#stt-model').value = state.settings.stt_model || 'medium';
+    $('#stt-review').checked = state.settings.stt_review !== false;
+    $('#stt-ollama-correction').checked = Boolean(state.settings.stt_ollama_correction);
+    $('#stt-dictionary').value = state.settings.stt_dictionary || '';
     $('#llm-key-status').textContent = state.settings.llm_configured ? 'кілт сақталған' : 'қосылмаған';
     $('#elevenlabs-key-status').textContent = state.settings.elevenlabs_configured ? 'кілт сақталған' : 'қосылмаған';
     $('#clear-llm-key').checked = false;
@@ -511,6 +565,9 @@
       elevenlabs_api_key: $('#elevenlabs-api-key').value.trim(), clear_elevenlabs_api_key: $('#clear-elevenlabs-key').checked,
       speech_style: $('#speech-style').value, speech_rate: Number($('#speech-rate').value), speech_pitch: Number($('#speech-pitch').value),
       wake_enabled: $('#wake-enabled').checked, wake_language: $('#wake-language').value,
+      stt_provider: $('#stt-provider').value, stt_model: $('#stt-model').value,
+      stt_review: $('#stt-review').checked, stt_ollama_correction: $('#stt-ollama-correction').checked,
+      stt_dictionary: $('#stt-dictionary').value,
     };
     if (body.llm_provider === 'openai') { body.llm_api_key = $('#llm-api-key').value.trim(); body.clear_llm_api_key = $('#clear-llm-key').checked; }
     try {
@@ -526,7 +583,7 @@
     } catch (error) { result.classList.add('error'); result.textContent = error.message; throw error; }
   }
 
-  function wakeBusy() { return Boolean(state.commandBusy || state.speechBusy || state.nativeListening || state.listening); }
+  function wakeBusy() { return Boolean(state.commandBusy || state.speechBusy || state.nativeListening || state.listening || state.voiceCorrecting || state.voiceReview); }
   function wakeCommandCapture(status = state.wakeStatus) { return status?.phase === 'command' || (status?.phase === 'calibrating' && status?.voice_phase === 'calibrating') || status?.phase === 'recognizing'; }
   function setSpeechBusy(busy) { state.speechBusy = busy; syncWakeActivity(!busy); }
   function syncWakeActivity(force = false) {
@@ -611,8 +668,8 @@
         if (!dispatch) continue;
         if (event.type === 'wake') { stopSpeech(); applyWakeStatus(status); }
         else if (event.type === 'command' && String(event.text || '').trim()) {
-          if (state.commandBusy || state.nativeListening) { toast('Ағымдағы пәрмен аяқталған соң қайта шақырыңыз.'); await syncWakeActivity(true); continue; }
-          await handleCommand(String(event.text).trim());
+          if (state.commandBusy || state.nativeListening || state.voiceCorrecting || state.voiceReview) { toast('Ағымдағы пәрмен аяқталған соң қайта шақырыңыз.'); await syncWakeActivity(true); continue; }
+          await handleVoiceText(String(event.text).trim(), state.settings.wake_language);
         } else if (event.type === 'error') { toast(String(event.text || 'Шақыру пәрмені танылмады.'), true); await syncWakeActivity(true); }
       }
       if (state.wakeSeen.size > 300) state.wakeSeen = new Set([...state.wakeSeen].slice(-150));
@@ -1343,6 +1400,7 @@
   async function handleCommand(text) {
     text = String(text || '').trim();
     if (!text || state.commandBusy) return;
+    clearVoiceReview();
     state.commandBusy = true;
     const send = $('.send-button'); send.disabled = true;
     const history = state.history.slice(-8).map(({ role, content }) => ({ role, content }));
@@ -1387,6 +1445,14 @@
   $$('[data-command]').forEach((button) => button.addEventListener('click', () => handleCommand(button.dataset.command)));
   $('#help-button').addEventListener('click', () => handleCommand('Не істей аласың?'));
   $('#mic-button').addEventListener('click', listen);
+  $('#stt-check').addEventListener('click', checkRecognizer);
+  $('#voice-accept').addEventListener('click', () => handleCommand($('#command-input').value));
+  $('#voice-use-original').addEventListener('click', () => {
+    $('#command-input').value = state.voiceOriginal; $('#command-input').focus();
+  });
+  $('#voice-cancel').addEventListener('click', () => {
+    clearVoiceReview(); $('#command-input').value = ''; configureVoice(); syncWakeActivity(true);
+  });
   $('#voice-language').value = ['kk-KZ', 'ru-RU'].includes(state.language) ? state.language : 'kk-KZ';
   state.language = $('#voice-language').value;
   $('#voice-language').addEventListener('change', (event) => { state.language = event.target.value; remember('ayan-language', state.language); });

@@ -211,13 +211,20 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
     @application.post("/api/settings")
     async def update_settings(body: SettingsInput, request: Request):
         updates = body.model_dump(exclude_none=True, exclude_unset=True)
-        result = request.app.state.preferences.update(updates)
-        if os.environ.get("AYAN_DESKTOP_MODE") == "1" and {"wake_enabled", "wake_language"} & updates.keys():
+        preferences = request.app.state.preferences
+        previous_wake_enabled = preferences.get("wake_enabled")
+        previous_wake_language = preferences.get("wake_language")
+        result = preferences.update(updates)
+        wake_changed = (
+            result["wake_enabled"] != previous_wake_enabled
+            or result["wake_language"] != previous_wake_language
+        )
+        if os.environ.get("AYAN_DESKTOP_MODE") == "1" and wake_changed:
             service = request.app.state.wake
             if not result["wake_enabled"]:
                 await asyncio.to_thread(service.stop)
             else:
-                if "wake_language" in updates:
+                if previous_wake_enabled and result["wake_language"] != previous_wake_language:
                     await asyncio.to_thread(service.stop)
                 await asyncio.to_thread(service.start, result["wake_language"])
         return result

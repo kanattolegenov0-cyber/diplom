@@ -110,8 +110,9 @@ def test_settings_persist_disabled_state_and_language_restart(setup):
         assert wake.calls[-1] == ("stop",)
         client.post("/api/settings", json={"wake_enabled": True, "wake_language": "ru-RU"})
         assert wake.calls[-2:] == [("stop",), ("start", "ru-RU")]
+        calls_after_wake_change = list(wake.calls)
         client.post("/api/settings", json={"speech_style": "natural", "speech_rate": 0, "speech_pitch": 0})
-        assert wake.calls[-1] == ("start", "ru-RU")
+        assert wake.calls == calls_after_wake_change
     assert Preferences(path).get("wake_language") == "ru-RU"
 
 

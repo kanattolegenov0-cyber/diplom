@@ -2,7 +2,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
 import asyncio
 import os
 import sys
@@ -15,8 +14,6 @@ from pydantic import BaseModel, Field
 from pydantic import StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .browser import BrowserError, BrowserService
-from .anime import AnimeError, AnimeService
 from .assistant import AssistantService, validate_action
 from .music import MusicError, MusicService
 from .ollama import OllamaService
@@ -54,15 +51,6 @@ class WeeklyTaskCompletionInput(BaseModel):
 class ReminderInput(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     delay_seconds: int = Field(ge=1, le=2592000)
-
-
-class BrowserInput(BaseModel):
-    action: Literal["open", "click", "fill", "scroll", "back"]
-    url: str | None = Field(default=None, max_length=2048)
-    target: str | None = Field(default=None, max_length=500)
-    value: str | None = Field(default=None, max_length=10000)
-    direction: Literal["up", "down"] = "down"
-    confirmed: bool = False
 
 
 class VoiceInput(BaseModel):
@@ -136,11 +124,9 @@ def execute_local_action(result: dict, store: Store) -> dict:
     return result
 
 
-def create_app(data_dir: Path | None = None, browser=None, music=None, assistant=None,
-               speech=None, wake=None, wake_model=None, ollama=None, anime=None) -> FastAPI:
-    browser = browser or BrowserService()
+def create_app(data_dir: Path | None = None, music=None, assistant=None,
+               speech=None, wake=None, wake_model=None, ollama=None) -> FastAPI:
     music = music or MusicService()
-    anime = anime or AnimeService()
 
     @asynccontextmanager
     async def lifespan(application):
@@ -162,7 +148,6 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
             yield
         finally:
             await asyncio.to_thread(application.state.wake.close)
-            await browser.close()
 
     application = FastAPI(title="AYAN — жеке көмекші", version="0.1.0", lifespan=lifespan)
     application.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
@@ -191,7 +176,7 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
 
     @application.get("/api/health")
     async def health():
-        return {"status": "ok", "name": "AYAN", "browser_available": await browser.available(),
+        return {"status": "ok", "name": "AYAN",
                 "voice_client_side": True, "desktop_mode": os.environ.get("AYAN_DESKTOP_MODE") == "1",
                 "native_voice_available": voice.available()}
 
@@ -324,39 +309,9 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
     async def music_playlist(request: Request):
         return {"tracks": request.app.state.store.frequent_tracks()}
 
-    @application.get("/api/anime/search")
-    async def anime_search(q: str = Query(min_length=1, max_length=200)):
-        try:
-            return await anime.search(q)
-        except AnimeError as exc:
-            raise HTTPException(502, str(exc)) from exc
-
-    @application.get("/api/anime/episodes")
-    async def anime_episodes(url: str = Query(min_length=1, max_length=2048)):
-        try:
-            return await anime.episodes(url)
-        except AnimeError as exc:
-            raise HTTPException(502, str(exc)) from exc
-
-    @application.get("/api/anime/player")
-    async def anime_player(url: str = Query(min_length=1, max_length=2048)):
-        try:
-            return await anime.player(url)
-        except AnimeError as exc:
-            raise HTTPException(502, str(exc)) from exc
-
     @application.post("/api/music/listens")
     async def music_listen(body: ListenInput, request: Request):
         return request.app.state.store.record_listen(**body.model_dump())
-
-    @application.post("/api/browser/action")
-    async def browser_action(body: BrowserInput):
-        if body.action == "click" and not body.confirmed:
-            raise HTTPException(409, "Батырманы басуды алдымен растаңыз.")
-        try:
-            return await browser.execute(body.action, body.url, body.target, body.value, body.direction)
-        except BrowserError as exc:
-            raise HTTPException(400, str(exc)) from exc
 
     @application.post("/api/voice/listen")
     async def voice_listen(body: VoiceInput, request: Request):

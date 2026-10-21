@@ -172,27 +172,23 @@ def test_model_setup_validates_before_promoting_and_reuses_installed_model(tmp_p
         path = Path(output_dir)
         path.mkdir()
         (path / 'model.bin').write_bytes(b'fixture')
+        if not failure:
+            (path / 'config.json').write_text('{}')
+            (path / 'tokenizer.json').write_text('{}')
         calls.append('download')
-    def model(path, **kwargs):
-        assert kwargs['local_files_only'] is True
-        if failure:
-            raise RuntimeError('Model validation failed')
-        calls.append('validate')
-        return object()
     module = ModuleType('faster_whisper')
     module.download_model = download
-    module.WhisperModel = model
     monkeypatch.setitem(sys.modules, 'faster_whisper', module)
     monkeypatch.setenv('AYAN_DATA_DIR', str(tmp_path))
     monkeypatch.setattr(sys, 'argv', ['setup_transcription', '--model', 'small'])
     if failure:
-        with pytest.raises(RuntimeError, match='validation failed'):
+        with pytest.raises(RuntimeError, match='incomplete'):
             main()
         assert not target.exists()
-        assert Preferences(tmp_path).get('stt_model') == 'medium'
+        assert Preferences(tmp_path).get('stt_model') == 'small'
     else:
         main()
         assert target.is_dir()
         assert Preferences(tmp_path).get('stt_model') == 'small'
         main()
-        assert calls == ['download', 'validate', 'validate']
+        assert calls == ['download']

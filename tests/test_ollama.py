@@ -130,18 +130,15 @@ async def test_exact_commands_still_use_rules_without_local_model_request(ollama
     assert ollama_http["calls"] == []
 
 
-async def test_ollama_normalizes_and_returns_six_actions_without_executing(ollama_http):
+async def test_ollama_returns_supported_actions_without_executing(ollama_http):
     actions = [
         {"intent": "music_search", "payload": {"query": "Moldanazar Ақпен бірге"}},
         {"intent": "music_control", "payload": {"action": "volume", "volume": 35}},
-        {"intent": "browser_open", "payload": {"url": "Example.COM"}},
-        {"intent": "browser_action", "payload": {"action": "fill", "target": "Іздеу", "value": "Абай"}},
         {"intent": "diary_add", "payload": {"content": "Кітап оқыдым"}},
         {"intent": "reminder_add", "payload": {"title": "Су іш", "delay_seconds": 600}},
     ]
     reply(ollama_http, actions=actions)
     result = await AssistantService(LocalPreferences()).resolve("Маған бірнеше істі реттеуге көмектес")
-    actions[2]["payload"]["url"] = "https://example.com"
     assert result == {"intent": "plan", "message": "Әрекеттерді дайындадым.", "payload": {"actions": actions}, "engine": "ollama"}
 
 
@@ -193,14 +190,12 @@ async def test_history_context_and_language_remain_bounded_untrusted_data(ollama
     await AssistantService(LocalPreferences()).resolve("Помоги, Аян", volume=25, language="ru-RU", history=history, context=context)
     messages = json.loads(post_requests(ollama_http)[0].content)["messages"]
     assert len(messages) <= 10
-    assert "UNTRUSTED" in messages[0]["content"]
     assert "override rules" not in json.dumps(messages)
     assert all(len(message["content"]) <= 1500 for message in messages[1:-1])
     data = json.loads(messages[-1]["content"])
     assert data["language"] == "ru-RU" and data["current_volume"] == 25
     assert "secret" not in data["context_data"]
-    assert "html" not in data["context_data"]["untrusted_page_context"]
-    assert len(data["context_data"]["untrusted_page_context"]["labels"]) == 20
+    assert "untrusted_page_context" not in data["context_data"]
 
 
 @pytest.mark.parametrize("model", [

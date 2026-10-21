@@ -9,24 +9,9 @@ from app.music import MusicError, MusicService, video_id
 from app.storage import Store
 
 
-class FakeBrowser:
-    def __init__(self):
-        self.calls = []
-
-    async def available(self):
-        return True
-
-    async def execute(self, *args):
-        self.calls.append(args)
-        return {"url": "https://example.com", "title": "Example", "screenshot": "cG5n", "message": "Сайт ашылды."}
-
-    async def close(self):
-        pass
-
-
 @pytest.fixture
 def client(tmp_path):
-    with TestClient(create_app(tmp_path, browser=FakeBrowser())) as client:
+    with TestClient(create_app(tmp_path)) as client:
         yield client
 
 
@@ -77,19 +62,12 @@ def test_music_controls_do_not_claim_server_playback(client):
     assert result["payload"] == {"action": "volume", "volume": 50}
 
 
-def test_browser_click_requires_explicit_confirmation(tmp_path):
-    browser = FakeBrowser()
-    with TestClient(create_app(tmp_path, browser=browser)) as client:
-        assert client.post("/api/browser/action", json={"action": "click", "target": "Send"}).status_code == 409
-        assert browser.calls == []
-        assert client.post("/api/browser/action", json={"action": "click", "target": "Read", "confirmed": True}).status_code == 200
-        assert len(browser.calls) == 1
-
-
-def test_browser_commands_only_parse_until_frontend_executes(client):
-    result = client.post("/api/command", json={"text": "сайт аш example.com"}).json()
-    assert result["intent"] == "browser_open"
-    assert result["payload"]["url"] == "https://example.com"
+def test_removed_sections_have_no_routes_or_navigation(client):
+    assert client.post("/api/browser/action", json={"action": "open", "url": "https://example.com"}).status_code == 404
+    assert client.get("/api/anime/search", params={"q": "Gachiakuta"}).status_code == 404
+    page = client.get("/").text
+    assert 'data-view="browser"' not in page and 'data-view="anime"' not in page
+    assert 'data-page="browser"' not in page and 'data-page="anime"' not in page
 
 
 def test_cross_origin_and_rebinding_requests_rejected(client):
@@ -189,7 +167,7 @@ def test_speech_response_has_audio_mime_and_error_is_actionable(tmp_path):
                 raise SpeechError("Дауыс сервисіне қосылу мүмкін болмады.")
             return b"ID3-test-audio"
 
-    with TestClient(create_app(tmp_path, browser=FakeBrowser(), speech=SpeechDouble())) as client:
+    with TestClient(create_app(tmp_path, speech=SpeechDouble())) as client:
         response = client.post("/api/speech", json={"text": "Қазақша жауап", "language": "kk-KZ"})
         assert response.status_code == 200
         assert response.headers["content-type"] == "audio/mpeg"
@@ -207,7 +185,7 @@ def test_model_plan_is_not_executed_by_command_endpoint(tmp_path):
                 {"intent": "reminder_add", "payload": {"title": "Су ішу", "delay_seconds": 60}},
             ]}}
 
-    with TestClient(create_app(tmp_path, browser=FakeBrowser(), assistant=AssistantDouble())) as client:
+    with TestClient(create_app(tmp_path, assistant=AssistantDouble())) as client:
         response = client.post("/api/command", json={"text": "Табиғи екі тапсырма"})
         assert response.status_code == 200 and response.json()["intent"] == "plan"
         assert client.get("/api/diary").json()["entries"] == []

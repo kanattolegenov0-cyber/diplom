@@ -25,7 +25,7 @@
     language: stored('ayan-language', 'kk-KZ'), health: null,
     recognition: null, listening: false, nativeListening: false,
     player: null, playerReady: false, currentTrack: null, playing: false,
-    youtubePromise: null, commandBusy: false, browserBusy: false,
+    youtubePromise: null, commandBusy: false,
     entries: [], reminders: [], notifiedReminders: new Set(), weeklyTasks: [],
     taskWeekStart: null, taskLoadGeneration: 0, editingTaskId: null,
     history: [], lastEngine: null, settingsPromise: null,
@@ -38,11 +38,11 @@
     playlist: [], playlistQueue: [], playlistQueueIndex: -1, playlistQueueActive: false,
     listenSession: null, musicCandidates: [], failedMusicIds: new Set(), musicRecoveryBusy: false,
     playerSource: 'youtube', playbackGeneration: 0, musicQuery: '', soundcloudAttempted: false,
-    soundcloudPromise: null, animeGeneration: 0,
+    soundcloudPromise: null,
     voiceCorrecting: false, voiceReview: false, voiceGeneration: 0, voiceOriginal: '',
     ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
   };
-  const viewNames = { home: 'Басты бет', music: 'Музыка', anime: 'Аниме', browser: 'Браузер', diary: 'Күнделік', tasks: 'Тапсырмалар', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
+  const viewNames = { home: 'Басты бет', music: 'Музыка', diary: 'Күнделік', tasks: 'Тапсырмалар', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
   const months = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз', 'қыркүйек', 'қазан', 'қараша', 'желтоқсан'];
   function syncSidebar() { $('#sidebar').inert = mobileMedia.matches && !$('#sidebar').classList.contains('open'); }
@@ -247,6 +247,7 @@
   function setAssistantState(text) { $('#assistant-state').textContent = text; }
   function setListening(listening) {
     state.listening = listening;
+    syncPlayerVolume();
     $('#mic-button').setAttribute('aria-pressed', String(listening));
     $('#mic-button').setAttribute('aria-label', listening ? 'Тыңдауды тоқтату' : 'Дауыстық пәрмен беру');
     $('.orb-scene').classList.toggle('listening', listening);
@@ -351,6 +352,7 @@
     clearVoiceReview();
     if (state.health?.desktop_mode && state.health?.native_voice_available) {
       state.nativeListening = true;
+      syncPlayerVolume();
       stopSpeech();
       setListening(false);
       setAssistantState('Микрофон дайындалуда…');
@@ -431,8 +433,6 @@
       $('#connection-status').replaceChildren(document.createElement('span'), document.createTextNode('Жұмысқа дайын'));
       $('#sidebar-online').classList.add('connected');
       if (state.health.desktop_mode) $('#platform-label').textContent = 'Windows · Жеке көмекші';
-      $('#browser-status').textContent = state.health.browser_available ? 'Браузер дайын' : 'Браузер қолжетімсіз';
-      if (!state.health.browser_available) $('#browser-notice').textContent = 'Автоматтандырылған браузер осы ортада қолжетімсіз. Бағдарламаның браузер компоненті орнатылғанын тексеріңіз.';
     } catch {
       $('#connection-status').classList.add('offline');
       $('#connection-status').replaceChildren(document.createElement('span'), document.createTextNode('Байланыс жоқ'));
@@ -648,7 +648,7 @@
   function applyWakeStatus(status) {
     if (!status || typeof status.phase !== 'string') return;
     const wasCommandCapture = wakeCommandCapture();
-    state.wakeStatus = status; renderWakeStatus();
+    state.wakeStatus = status; renderWakeStatus(); syncPlayerVolume();
     if (wasCommandCapture && !wakeCommandCapture(status) && !state.nativeListening && !state.commandBusy) {
       setAssistantState('Пәрменіңізді күтіп тұрмын'); configureVoice();
     }
@@ -939,7 +939,7 @@
       widget.bind(SC.Widget.Events.READY, () => {
         clearTimeout(timer);
         if (!active()) { resolve(); return; }
-        state.playerReady = true; adapter.setVolume(state.volume); widget.play(); resolve();
+        state.playerReady = true; syncPlayerVolume(); widget.play(); resolve();
       });
       widget.bind(SC.Widget.Events.PLAY, () => { if (active()) { playing = true; handleMusicState({ data: 1 }); } });
       widget.bind(SC.Widget.Events.PAUSE, () => { if (active()) { playing = false; handleMusicState({ data: 2 }); } });
@@ -1054,7 +1054,7 @@
       $('#player-stage').classList.add('has-video');
       if (state.player && state.playerReady) {
         state.player.loadVideoById(track.id);
-        state.player.setVolume(state.volume);
+        syncPlayerVolume();
       } else if (!state.player) {
         await new Promise((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('Ойнатқыш дайын болмады. YouTube-та ашу сілтемесін пайдаланыңыз.')), 18000);
@@ -1063,7 +1063,7 @@
             videoId: track.id, width: '100%', height: '100%',
             playerVars: { playsinline: 1, rel: 0, autoplay: 0, origin: window.location.origin },
             events: {
-              onReady: () => { if (state.player !== initializingPlayer) return; clearTimeout(timer); state.playerReady = true; state.player.setVolume(state.volume); $('#play-toggle').disabled = false; if (state.currentTrack?.id !== track.id) state.player.loadVideoById(state.currentTrack.id); else state.player.playVideo(); resolve(); },
+              onReady: () => { if (state.player !== initializingPlayer) return; clearTimeout(timer); state.playerReady = true; syncPlayerVolume(); $('#play-toggle').disabled = false; if (state.currentTrack?.id !== track.id) state.player.loadVideoById(state.currentTrack.id); else state.player.playVideo(); resolve(); },
               onStateChange: (event) => { if (state.player === initializingPlayer) handleMusicState(event); },
               onError: (event) => {
                 if (state.player !== initializingPlayer) return;
@@ -1091,12 +1091,17 @@
       throw error;
     }
   }
+  function syncPlayerVolume() {
+    if (!state.playerReady || !state.player) return;
+    const capturing = state.nativeListening || state.listening || wakeCommandCapture();
+    state.player.setVolume(capturing ? Math.min(state.volume, 15) : state.volume);
+  }
   function setVolume(value) {
     state.volume = clampVolume(value);
     $('#volume-slider').value = String(state.volume);
     $('#volume-value').textContent = `${state.volume}%`;
     remember('ayan-volume', state.volume);
-    if (state.playerReady) state.player.setVolume(state.volume);
+    syncPlayerVolume();
     if (state.speechAudio) state.speechAudio.volume = state.volume / 100;
   }
   function controlMusic(payload) {
@@ -1108,172 +1113,6 @@
     if (payload.action === 'pause') { state.player.pauseVideo(); updatePlayback(false); return 'Музыка кідіртілді.'; }
     state.player.playVideo();
     return 'Ойнатуды сұрадым. Әуен басталмаса, ойнату батырмасын басыңыз.';
-  }
-
-  function safeAnimeUrl(value) {
-    try {
-      const url = new URL(value);
-      return url.protocol === 'https:' && url.hostname === 'animego.work' && !url.port && !url.username && !url.password ? url.href : null;
-    } catch { return null; }
-  }
-  function clearAnimePlayer() {
-    $('#anime-frame').src = 'about:blank'; $('#anime-frame').hidden = true;
-    const video = $('#anime-video'); video.pause(); video.removeAttribute('src'); video.load(); video.hidden = true;
-    $('.anime-frame-wrap').hidden = true;
-    $('#anime-players').replaceChildren();
-  }
-  async function displayAnimePage(url, notice, generation = ++state.animeGeneration) {
-    clearAnimePlayer();
-    $('#anime-external').href = url;
-    $('#anime-notice').textContent = 'Бейнеплеерді дайындап жатырмын…';
-    try {
-      const response = await api(`/api/anime/player?url=${encodeURIComponent(url)}`, { timeout: 16000 });
-      if (generation !== state.animeGeneration) return;
-      const players = (response.players || []).filter((item) => {
-        try { const parsed = new URL(item.url); return ['embed', 'video'].includes(item.kind) && parsed.protocol === 'https:' && !parsed.username && !parsed.password; } catch { return false; }
-      });
-      if (!players.length) throw new Error('Жеке бейнеплеер табылмады. Басқа серияны таңдаңыз.');
-      const showPlayer = (item) => {
-        $('#anime-frame').src = 'about:blank'; $('#anime-frame').hidden = item.kind !== 'embed';
-        const video = $('#anime-video'); video.pause(); video.removeAttribute('src'); video.load(); video.hidden = item.kind !== 'video';
-        $('.anime-frame-wrap').hidden = false;
-        if (item.kind === 'embed') $('#anime-frame').src = item.url;
-        else { video.src = item.url; video.play().catch(() => { $('#anime-notice').textContent = 'Ойнату батырмасын басыңыз.'; }); }
-      };
-      if (players.length > 1) players.forEach((item, index) => {
-        const button = document.createElement('button'); button.type = 'button'; button.className = 'secondary-button';
-        button.textContent = `Ойнатқыш ${index + 1}`;
-        button.addEventListener('click', () => showPlayer(item)); $('#anime-players').append(button);
-      });
-      showPlayer(players[0]);
-      $('#anime-notice').textContent = `${notice} Басталмаса, плеердегі ойнату батырмасын басыңыз.`;
-    } catch (error) {
-      if (generation !== state.animeGeneration) return;
-      $('#anime-notice').textContent = error.message;
-      throw error;
-    }
-  }
-  async function openAnime(result, season, episode) {
-    const seriesUrl = safeAnimeUrl(result.url);
-    if (!seriesUrl) throw new Error('Аниме сілтемесі жарамсыз.');
-    const generation = ++state.animeGeneration;
-    clearAnimePlayer();
-    let selectedUrl = seriesUrl;
-    let notice = 'Аниме плеері дайын.';
-    $('#anime-episodes').replaceChildren();
-    try {
-      const response = await api(`/api/anime/episodes?url=${encodeURIComponent(seriesUrl)}`, { timeout: 16000 });
-      if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
-      const episodes = Array.isArray(response.episodes) ? response.episodes : [];
-      for (const item of episodes) {
-        const url = safeAnimeUrl(item.url);
-        if (!url) continue;
-        const button = document.createElement('button');
-        button.className = 'secondary-button'; button.type = 'button';
-        button.textContent = `${item.season}-маусым · ${item.episode}-серия`;
-        button.addEventListener('click', () => displayAnimePage(url, `${button.textContent} плеері дайын.`).catch((error) => toast(error.message, true)));
-        $('#anime-episodes').append(button);
-      }
-      if (episode) {
-        const match = episodes.find((item) => item.episode === episode && (!season || item.season === season) && safeAnimeUrl(item.url));
-        if (match) {
-          selectedUrl = safeAnimeUrl(match.url);
-          notice = `${match.season}-маусым, ${match.episode}-серия плеері дайын.`;
-        } else {
-          notice = `${season || 1}-маусым, ${episode}-серия автоматты таңдалмады. Егер плеерде серия таңдауы болса, сол жерден таңдаңыз.`;
-        }
-      }
-    } catch (error) {
-      notice = 'Серия тізімі жүктелмеді. Плеерде серия таңдауы болса, сол жерден таңдаңыз.';
-    }
-    if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
-    await displayAnimePage(selectedUrl, notice, generation);
-    return notice;
-  }
-  async function searchAnime(query, season = null, episode = null) {
-    query = String(query || '').trim();
-    if (!query) throw new Error('Аниме атауын енгізіңіз.');
-    const generation = ++state.animeGeneration;
-    clearAnimePlayer();
-    $('#anime-results').replaceChildren(); $('#anime-episodes').replaceChildren();
-    $('#anime-query').value = query;
-    $('#anime-season').value = season || '';
-    $('#anime-episode').value = episode || '';
-    $('#anime-notice').textContent = 'Аниме ізделіп жатыр…';
-    let response;
-    try { response = await api(`/api/anime/search?q=${encodeURIComponent(query)}`, { timeout: 28000 }); }
-    catch (error) {
-      if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
-      $('#anime-notice').textContent = error.message;
-      throw error;
-    }
-    if (generation !== state.animeGeneration) return 'Басқа аниме таңдалды.';
-    const results = (Array.isArray(response.results) ? response.results : []).filter((item) => safeAnimeUrl(item.url));
-    $('#anime-results').replaceChildren();
-    for (const item of results) {
-      const button = document.createElement('button');
-      button.className = 'track-result'; button.type = 'button';
-      const title = document.createElement('strong'); title.textContent = item.title || 'Аниме';
-      button.append(icons('play'), title);
-      button.addEventListener('click', () => openAnime(item, season, episode).catch((error) => toast(error.message, true)));
-      $('#anime-results').append(button);
-    }
-    if (!results.length) {
-      $('#anime-notice').textContent = 'Аниме табылмады. Атауын тексеріп, қайта іздеңіз.';
-      return 'Аниме табылмады. Атауын тексеріп, қайта іздеңіз.';
-    }
-    return openAnime(results[0], season, episode);
-  }
-
-  function confirmClick(target) {
-    return new Promise((resolve) => {
-      const dialog = $('#action-dialog');
-      $('#dialog-description').textContent = `Аян «${target || 'таңдалған элемент'}» элементін басады.`;
-      dialog.returnValue = 'cancel';
-      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
-      dialog.showModal();
-    });
-  }
-  async function browserAction(payload, stopOnCancel = false) {
-    if (state.browserBusy) throw new Error('Алдыңғы браузер әрекеті орындалып жатыр. Аяқталғанын күтіңіз.');
-    const request = { ...payload };
-    if (request.action === 'click') {
-      if (!(await confirmClick(request.target))) {
-        if (stopOnCancel) throw new Error('Басу әрекетінен бас тартылды. Кейінгі қадамдар орындалмады.');
-        return 'Басу әрекетінен бас тартылды.';
-      }
-      request.confirmed = true;
-    }
-    state.browserBusy = true;
-    $('#browser-notice').textContent = 'Браузер әрекетін орындап жатырмын…';
-    const controls = $$('#browser-open-form button, #browser-action-form button, #browser-back');
-    controls.forEach((control) => { control.disabled = true; });
-    try {
-      const result = await post('/api/browser/action', request);
-      if (result.url) $('#browser-url').value = result.url;
-      $('#browser-title').textContent = result.title || result.url || 'Ашылған бет';
-      if (result.screenshot) {
-        const img = $('#browser-screenshot');
-        const screenshot = String(result.screenshot);
-        if (/^[A-Za-z0-9+/=\s]+$/.test(screenshot)) {
-          img.src = `data:image/png;base64,${screenshot}`;
-          img.hidden = false;
-          $('.browser-empty').hidden = true;
-        }
-      }
-      $('#browser-status').textContent = 'Браузер дайын';
-      $('#browser-notice').textContent = result.message || 'Әрекет орындалды. Ашылған беттің суреті жаңартылды.';
-      return result.message || 'Браузер әрекеті орындалды.';
-    } catch (error) { $('#browser-notice').textContent = error.message; throw error; }
-    finally { state.browserBusy = false; controls.forEach((control) => { control.disabled = false; }); }
-  }
-  function updateBrowserActionFields() {
-    const action = $('#browser-action').value;
-    $('.target-field').hidden = action === 'scroll';
-    $('.value-field').hidden = action !== 'fill';
-    $('.direction-field').hidden = action !== 'scroll';
-    $('#browser-target').required = action !== 'scroll';
-    $('#browser-value').required = action === 'fill';
   }
 
   function renderDiary() {
@@ -1488,8 +1327,6 @@
     switch (intent) {
       case 'music_search':
         showView('music'); return searchMusic(payload.query, true, inPlan);
-      case 'anime_search':
-        showView('anime'); return searchAnime(payload.query, payload.season, payload.episode);
       case 'music_control':
         showView('music');
         if (inPlan && payload.action !== 'volume' && !state.playerReady) throw new Error('Алдымен әнді таңдап, ойнатқыштың дайын болғанын күтіңіз.');
@@ -1498,10 +1335,6 @@
         showView('music'); await loadPlaylist();
         if (payload.action === 'show') return state.playlist.length ? `Жиі тыңдалған ${state.playlist.length} ән көрсетілді.` : 'Жиі тыңдалатын әндер тізімі әзірге бос. Әнді кемінде 30 секунд тыңдаңыз.';
         return playPlaylist();
-      case 'browser_open':
-        showView('browser'); return browserAction({ action: 'open', url: payload.url }, inPlan);
-      case 'browser_action':
-        showView('browser'); return browserAction(payload, inPlan);
       case 'diary_add':
       case 'diary_list':
         showView('diary'); await loadDiary(); return reply;
@@ -1518,7 +1351,7 @@
   }
   async function executePlan(result) {
     const actions = result.payload?.actions;
-    const allowed = ['music_search', 'anime_search', 'music_control', 'music_playlist', 'browser_open', 'browser_action', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
+    const allowed = ['music_search', 'music_control', 'music_playlist', 'diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
     if (!Array.isArray(actions) || !actions.length || actions.length > 6) throw new Error('Жоспарда 1–6 қадам болуы керек. Сұрағыңызды шағын бөліктерге бөліңіз.');
     if (actions.some((action) => !action || !allowed.includes(action.intent) || !action.payload || typeof action.payload !== 'object' || Array.isArray(action.payload))) throw new Error('Жоспар қадамының пішімі жарамсыз. Қайта сұрап көріңіз.');
     for (let index = 0; index < actions.length; index += 1) {
@@ -1550,7 +1383,10 @@
       const result = await post('/api/command', { text, volume: state.volume, language: state.language, history }, { timeout: state.settings.llm_provider === 'ollama' ? 210000 : 45000 });
       state.lastEngine = result.engine || null; renderEngineStatus();
       const reply = result.intent === 'plan' ? await executePlan(result) : await executeIntent(result.intent, result.payload || {}, result.message || 'Пәрмен қабылданды.');
-      message(reply);
+      const musicIntents = ['music_search', 'music_control', 'music_playlist'];
+      const musicAction = musicIntents.includes(result.intent)
+        || (result.intent === 'plan' && result.payload?.actions?.some((action) => musicIntents.includes(action.intent)));
+      message(reply, 'assistant', false, !musicAction && !state.playing);
     } catch (error) { message(error.message, 'assistant', true); }
     finally { state.commandBusy = false; send.disabled = false; $('#command-progress').hidden = true; setAssistantState(state.listening ? 'Тыңдап тұрмын…' : 'Пәрменіңізді күтіп тұрмын'); await syncWakeActivity(true); }
   }
@@ -1628,33 +1464,11 @@
   $('#music-search-form').addEventListener('submit', (event) => {
     event.preventDefault(); withFormBusy(event.currentTarget, () => searchMusic($('#music-query').value));
   });
-  $('#anime-search-form').addEventListener('submit', (event) => {
-    event.preventDefault();
-    withFormBusy(event.currentTarget, () => searchAnime($('#anime-query').value,
-      $('#anime-season').value ? Number($('#anime-season').value) : null,
-      $('#anime-episode').value ? Number($('#anime-episode').value) : null));
-  });
-  $('#anime-video').addEventListener('error', () => {
-    if (!$('#anime-video').hidden) $('#anime-notice').textContent = 'Бейне жүктелмеді. Басқа плеерді немесе серияны таңдаңыз.';
-  });
   $('#play-toggle').addEventListener('click', () => controlMusic({ action: state.playing ? 'pause' : 'play' }));
   $('#playlist-play').addEventListener('click', () => playPlaylist().catch((error) => toast(error.message, true)));
   $('#playlist-next').addEventListener('click', () => nextPlaylistTrack().catch((error) => toast(error.message, true)));
   $('#playlist-refresh').addEventListener('click', () => loadPlaylist().catch((error) => toast(error.message, true)));
   $('#volume-slider').addEventListener('input', (event) => setVolume(event.target.value));
-  $('#browser-open-form').addEventListener('submit', (event) => {
-    event.preventDefault(); withFormBusy(event.currentTarget, async () => {
-      await browserAction({ action: 'open', url: $('#browser-url').value.trim() });
-    });
-  });
-  $('#browser-action').addEventListener('change', updateBrowserActionFields);
-  $('#browser-action-form').addEventListener('submit', (event) => {
-    event.preventDefault(); withFormBusy(event.currentTarget, () => browserAction({
-      action: $('#browser-action').value, target: $('#browser-target').value.trim(),
-      value: $('#browser-value').value, direction: $('#browser-direction').value,
-    }));
-  });
-  $('#browser-back').addEventListener('click', () => browserAction({ action: 'back' }).catch((error) => toast(error.message, true)));
   $('#diary-form').addEventListener('submit', (event) => {
     event.preventDefault(); withFormBusy(event.currentTarget, async () => {
       const content = $('#diary-content').value.trim();
@@ -1695,7 +1509,7 @@
   $('#today').dateTime = today.toISOString();
   $('#today').textContent = dateLabel(today, false);
   showView(window.location.hash.slice(1) || 'home', false);
-  updateSpeechToggle(); updateBrowserActionFields(); setVolume(state.volume); configureVoice();
+  updateSpeechToggle(); setVolume(state.volume); configureVoice();
   state.settingsPromise = loadSettings();
   state.settingsPromise.catch(() => { $('#settings-status').textContent = 'Баптаулар жүктелмеді'; });
   checkHealth();

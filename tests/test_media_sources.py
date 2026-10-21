@@ -1,10 +1,7 @@
 import sqlite3
 
-import httpx
-import pytest
 from fastapi.testclient import TestClient
 
-from app.anime import AnimeError, AnimeService, GACHIAKUTA, player_url
 from app.main import create_app
 from app.music import MusicService
 from app.storage import Store
@@ -72,33 +69,3 @@ def test_upgrade_preserves_existing_youtube_listens(tmp_path):
     assert set(tracks) == {'AAAAAAAAAAA', 'sc:12345'}
     assert all(track['play_count'] == 1 for track in tracks.values())
     assert reopened.entries() == []
-
-
-async def test_anime_returns_only_media_not_site_or_ads():
-    html = '''<iframe src="https://ads.example/banner"></iframe>
-        <iframe src="https://animego.work/370-gachiakuta-2025.html"></iframe>
-        <iframe data-src="//kodik.info/serial/123/abc/720p?episode=3"></iframe>
-        <video controls><source src="https://media.example/episode.mp4?token=123"></video>'''
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, text=html))) as client:
-        result = await AnimeService(client).player(GACHIAKUTA)
-    assert result['players'] == [
-        {'kind': 'embed', 'url': 'https://kodik.info/serial/123/abc/720p?episode=3'},
-        {'kind': 'video', 'url': 'https://media.example/episode.mp4?token=123'},
-    ]
-
-
-async def test_anime_without_player_does_not_fall_back_to_full_site():
-    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda request: httpx.Response(200, text='<h1>Series page</h1>'))) as client:
-        with pytest.raises(AnimeError, match='бейнеплеер'):
-            await AnimeService(client).player(GACHIAKUTA)
-
-
-@pytest.mark.parametrize('url,kind', [
-    ('http://kodik.info/serial/123/abc/720p', 'embed'),
-    ('https://kodik.info.evil.test/serial/123/abc/720p', 'embed'),
-    ('https://127.0.0.1/episode.mp4', 'video'),
-    ('javascript:alert(1)', 'embed'),
-    ('https://animego.work/370-gachiakuta-2025.html', 'embed'),
-])
-def test_player_rejects_non_media_or_private_urls(url, kind):
-    assert player_url(url, kind, GACHIAKUTA) is None

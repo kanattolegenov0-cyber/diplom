@@ -56,7 +56,7 @@ async def test_exact_rules_do_not_use_online_api(mocked_api):
     assert mocked_api["calls"] == []
 
 
-@pytest.mark.parametrize("text", ["сайт аш http://127.0.0.1", "напомни через 0 минут воду", "напомни через 31 дней воду"])
+@pytest.mark.parametrize("text", ["напомни через 0 минут воду", "напомни через 31 дней воду"])
 async def test_invalid_explicit_commands_remain_rules_errors(mocked_api, text):
     result = await service().resolve(text)
     assert result["intent"] == "unknown"
@@ -99,16 +99,14 @@ async def test_unknown_with_key_uses_model_even_for_bare_music(mocked_api):
     assert mocked_api["client_options"][0]["timeout"].read <= 20
 
 
-async def test_natural_multiaction_plan_is_in_order_and_normalizes_url(mocked_api):
+async def test_natural_multiaction_plan_is_in_order(mocked_api):
     actions = [
-        {"intent": "browser_open", "payload": {"url": "Example.COM"}},
-        {"intent": "browser_action", "payload": {"action": "fill", "target": "Іздеу", "value": "Абай"}},
+        {"intent": "music_search", "payload": {"query": "Moldanazar"}},
         {"intent": "music_control", "payload": {"action": "volume", "volume": 30}},
         {"intent": "reminder_add", "payload": {"title": "Су іш", "delay_seconds": 600}},
     ]
     reply(mocked_api, actions=actions)
-    result = await service().resolve("Алдымен мысал сайтын ашып, Абайды ізде, дыбысты бәсеңдет және су ішуді еске сал")
-    actions[0]["payload"]["url"] = "https://example.com"
+    result = await service().resolve("Алдымен Moldanazar қос, дыбысты бәсеңдет және су ішуді еске сал")
     assert result["payload"]["actions"] == actions
     assert result["engine"] == "openai"
 
@@ -162,16 +160,13 @@ async def test_history_and_context_are_bounded_and_privileged_roles_dropped(mock
     await service().resolve("Сәлем, Аян", history=history, context=context)
     messages = json.loads(mocked_api["calls"][0].content)["messages"]
     assert messages[0]["role"] == "system"
-    assert "UNTRUSTED" in messages[0]["content"]
     assert len(messages) <= 10
     assert all(len(item["content"]) <= 1500 for item in messages[1:-1])
     assert "override rules" not in json.dumps(messages)
     assert "credentials" not in json.dumps(messages[1:])
     data = json.loads(messages[-1]["content"])
     assert "secret" not in data["context_data"]
-    page = data["context_data"]["untrusted_page_context"]
-    assert "html" not in page and "api_key" not in page
-    assert len(page["buttons"]) == 20 and len(page["buttons"][0]) == 150
+    assert "untrusted_page_context" not in data["context_data"]
     assert data["context_data"]["current_time"] == context["current_time"]
     assert data["current_user_request"] == "Сәлем, Аян"
 
@@ -235,10 +230,10 @@ async def test_malformed_history_entry_is_ignored(mocked_api):
     assert "ignore this" not in mocked_api["calls"][0].content.decode()
 
 
-def test_exported_action_validation_normalizes_and_rejects_unknown_tools():
-    assert validate_action({"intent": "browser_open", "payload": {"url": "Example.COM"}}) == {
-        "intent": "browser_open", "payload": {"url": "https://example.com"},
-    }
+def test_exported_action_validation_rejects_removed_tools():
+    for intent in ("browser_open", "browser_action", "anime_search"):
+        with pytest.raises(ValueError):
+            validate_action({"intent": intent, "payload": {}})
     with pytest.raises(ValueError, match="Көмекші әрекетінің") as caught:
         validate_action({"intent": "shell", "payload": {"command": "sensitive arbitrary shell text"}})
     assert "sensitive" not in str(caught.value)

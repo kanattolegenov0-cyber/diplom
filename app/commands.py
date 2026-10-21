@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import ipaddress
 import re
-from difflib import SequenceMatcher
-from urllib.parse import urlsplit, urlunsplit
 
 
 MAX_REMINDER_DELAY = 30 * 24 * 60 * 60
@@ -57,59 +54,6 @@ def _unquote(value: str) -> str:
     return value
 
 
-def normalize_public_url(value: str) -> str:
-    """Normalize a public HTTP(S) URL or raise ValueError.
-
-    This checks syntax and literal IP addresses only. The browser backend must
-    also resolve DNS and reject non-public addresses before each navigation.
-    """
-    value = _unquote(value)
-    if not value or re.search(r"[\s\\\x00-\x1f\x7f]", value):
-        raise ValueError("URL бос болмауы және бос орын қамтымауы керек.")
-    if value.startswith("//"):
-        raise ValueError("Толық HTTP(S) URL немесе домен көрсетіңіз.")
-    if "://" not in value:
-        value = "https://" + value
-    try:
-        parts = urlsplit(value)
-        host = parts.hostname
-        port = parts.port
-    except ValueError as exc:
-        raise ValueError("Сайттың мекенжайы дұрыс емес.") from exc
-    if parts.scheme.lower() not in {"http", "https"}:
-        raise ValueError("Тек HTTP және HTTPS сайттарын ашуға болады.")
-    if not host or parts.username is not None or parts.password is not None:
-        raise ValueError("URL ішінде логин не құпиясөз болмауы керек.")
-    if port is not None and not 1 <= port <= 65535:
-        raise ValueError("Порт нөмірі дұрыс емес.")
-    host = host.rstrip(".").lower()
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        try:
-            host = host.encode("idna").decode("ascii")
-        except UnicodeError as exc:
-            raise ValueError("Домен дұрыс емес.") from exc
-        labels = host.split(".")
-        if (
-            len(host) > 253
-            or len(labels) < 2
-            or any(not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in labels)
-            or not re.fullmatch(r"(?:[a-z]{2,63}|xn--[a-z0-9-]+)", labels[-1])
-            or labels[-1] in {"localhost", "local", "internal", "invalid", "test", "onion"}
-            or host == "home.arpa"
-            or host.endswith(".home.arpa")
-        ):
-            raise ValueError("Жалпыға қолжетімді сайттың доменін көрсетіңіз.")
-        normalized_host = host
-    else:
-        if not address.is_global or address.is_multicast:
-            raise ValueError("Жергілікті немесе жеке желі мекенжайларын ашуға болмайды.")
-        normalized_host = f"[{address.compressed}]" if address.version == 6 else str(address)
-    netloc = normalized_host + (f":{port}" if port is not None else "")
-    return urlunsplit((parts.scheme.lower(), netloc, parts.path, parts.query, parts.fragment))
-
-
 def _reminder(amount: str, unit: str, title: str) -> dict:
     unit = unit.casefold().rstrip(".")
     if unit.startswith(("сек", "second")):
@@ -130,7 +74,7 @@ def _reminder(amount: str, unit: str, title: str) -> dict:
 
 
 def parse_command(text: str, volume: int = 60) -> dict:
-    """Return {intent, message, payload}; no IO, browser, or audio actions occur."""
+    """Return {intent, message, payload}; no IO or audio actions occur."""
     if not isinstance(text, str) or not text.strip():
         return _unknown("Команда жазыңыз немесе микрофон арқылы айтыңыз.")
     command = re.sub(r"\s+", " ", text).strip()
@@ -141,7 +85,7 @@ def parse_command(text: str, volume: int = 60) -> dict:
         volume = 60
 
     if re.fullmatch(r"(?:көмек|помощь|help|не істей аласың\??|что ты умеешь\??)", command, _FLAGS):
-        return _result("help", "Музыка қосамын, сайт ашамын, күнделік пен еске салулар жүргіземін.")
+        return _result("help", "Музыка қосамын, күнделік, тапсырмалар мен еске салулар жүргіземін.")
     if re.fullmatch(r"(?:уақыт|сағат қанша\??|қазір сағат қанша\??|который час\??|время|time)", command, _FLAGS):
         return _result("time", "Ағымдағы уақыт.")
 
@@ -166,67 +110,31 @@ def parse_command(text: str, volume: int = 60) -> dict:
     if playlist:
         return playlist
 
-    match = re.fullmatch(r"(?:сайт\s+аш|(?:открой|открыть)\s+(?:сайт\s+)?|open\s+)(.+)", command, _FLAGS)
-    if not match:
-        match = re.fullmatch(r"(.+?)\s+сайтын\s+аш", command, _FLAGS)
-    if not match:
-        match = re.fullmatch(r"((?:https?://|www\.)\S+|[\w.-]+\.[\w.-]+)\s+аш", command, _FLAGS)
-    if match:
-        try:
-            url = normalize_public_url(match.group(1))
-        except ValueError as exc:
-            return _unknown(str(exc))
-        return _result("browser_open", "Сайт ашылады.", url=url)
-
-    match = re.fullmatch(r"введи\s+(.+?)\s+в\s+поле\s+(.+)", command, _FLAGS)
-    if match:
-        return _result("browser_action", "Өріс толтырылады.", action="fill", target=_unquote(match.group(2)), value=_unquote(match.group(1)))
-    match = re.fullmatch(r"(.+?)\s+өрісіне\s+(.+?)\s+жаз", command, _FLAGS)
-    if match:
-        return _result("browser_action", "Өріс толтырылады.", action="fill", target=_unquote(match.group(1)), value=_unquote(match.group(2)))
-    match = re.fullmatch(r"(?:нажми|бас)\s+(?:(?:кнопку|на)\s+)?(.+)", command, _FLAGS)
-    if not match:
-        match = re.fullmatch(r"(.+?)\s+түймесін\s+бас", command, _FLAGS)
-    if match:
-        return _result("browser_action", "Батырма басылады.", action="click", target=_unquote(match.group(1)))
-    if re.fullmatch(r"(?:төмен\s+(?:жылжыт|түс)|прокрути\s+вниз|scroll\s+down)", command, _FLAGS):
-        return _result("browser_action", "Бет төмен жылжиды.", action="scroll", direction="down")
-    if re.fullmatch(r"(?:жоғары\s+(?:жылжыт|көтер)|прокрути\s+вверх|scroll\s+up)", command, _FLAGS):
-        return _result("browser_action", "Бет жоғары жылжиды.", action="scroll", direction="up")
-    if re.fullmatch(r"(?:(?:браузерде\s+)?артқа|(?:вернись\s+)?назад|go\s+back)", command, _FLAGS):
-        return _result("browser_action", "Алдыңғы бет ашылады.", action="back")
-
-    season_label = r"(?:сезон(?:ы|ын|ның)?|маусым(?:ы|ын|ның)?|season)"
-    episode_label = r"(?:серия(?:сын|ны|сы)?|серию|серии|эпизод(?:ын|ы)?|episode|бөлім(?:ін|і)?)"
-    anime_cue = re.search(rf"\b(?:аниме|anime|{season_label}|{episode_label})\b", command, _FLAGS)
-    known_anime = any(SequenceMatcher(None, command.casefold().strip(' «»"'), name).ratio() >= .72
-                      for name in ("гачиакута", "gachiakuta"))
-    if anime_cue or known_anime:
-        season_match = re.search(rf"(?:\b(\d{{1,2}})\s*{season_label}\b|\b{season_label}\s*(\d{{1,2}})\b)", command, _FLAGS)
-        episode_match = re.search(rf"(?:\b(\d{{1,3}})\s*{episode_label}\b|\b{episode_label}\s*(\d{{1,3}})\b)", command, _FLAGS)
-        season = int(next((value for value in season_match.groups() if value), 1)) if season_match else None
-        episode = int(next((value for value in episode_match.groups() if value), 1)) if episode_match else None
-        query = command
-        for match in (season_match, episode_match):
-            if match:
-                query = query.replace(match.group(0), " ")
-        query = re.sub(r"\b(?:аниме|anime|қара|көр|көрсет|қос|аш|смотри|посмотри|включи|открой|play|watch)\b", " ", query, flags=_FLAGS)
-        query = _unquote(re.sub(r"\s+", " ", query).strip(" :,-"))
-        if not query:
-            return _unknown("Қай анимені көргіңіз келетінін айтыңыз.")
-        if season == 0 or episode == 0:
-            return _unknown("Маусым мен серия 1-ден басталады.")
-        return _result("anime_search", "Аниме ізделеді.", query=query, season=season, episode=episode)
-
-    match = re.fullmatch(r"(?:(?:громкость|звук|дыбыс(?:ты)?|дауыс(?:ты)?)(?:\s+(?:на|қой))?\s+(-?\d+)\s*%?(?:\s*[-–]?ға)?(?:\s+(?:қой|орнат))?|(?:установи|поставь)\s+громкость\s+(?:на\s+)?(-?\d+)\s*%?)", command, _FLAGS)
+    volume_command = command.rstrip(".!?").strip()
+    volume_noun = r"(?:(?:музыканың|музыка)\s+)?(?:дауыс(?:ты|ын)?|дыбыс(?:ты|ын)?|громкость|звук)"
+    amount = r"(?:\s+(?:на\s+)?(\d+)\s*(?:%|пайыз)?(?:\s*[-–]?(?:ға|қа))?)?"
+    match = re.fullmatch(
+        rf"(?:{volume_noun}(?:\s+(?:на|қой))?\s+(-?\d+)\s*%?(?:\s*[-–]?(?:ға|қа))?(?:\s+(?:қой|орнат))?|"
+        r"(?:установи|поставь)\s+громкость\s+(?:на\s+)?(-?\d+)\s*%?)",
+        volume_command, _FLAGS)
     if match:
         level = max(0, min(100, int(next(value for value in match.groups() if value is not None))))
         return _result("music_control", f"Дыбыс деңгейі: {level}%.", action="volume", volume=level)
-    match = re.fullmatch(r"(?:громче|(?:дыбыс(?:ты)?|дауыс(?:ты)?)\s+көтер)(?:\s+(?:на\s+)?(\d+)\s*%?)?", command, _FLAGS)
+    match = re.fullmatch(
+        rf"(?:{volume_noun}\s+(?:көтер(?:ші)?|көбейт(?:ші)?|арттыр|жоғарылат|қаттырақ(?:\s+қыл)?)|"
+        rf"(?:көтер|көбейт|арттыр)\s+{volume_noun}|громче|сделай\s+громче|прибавь\s+(?:звук|громкость))"
+        + amount, volume_command, _FLAGS)
+    if not match:
+        match = re.fullmatch(rf"{volume_noun}\s+(\d+)\s*(?:%|пайыз)?\s*[-–]?(?:ға|қа)\s+(?:көтер|көбейт|арттыр)", volume_command, _FLAGS)
     if match:
         level = min(100, volume + int(match.group(1) or 10))
         return _result("music_control", f"Дыбыс деңгейі: {level}%.", action="volume", volume=level)
-    match = re.fullmatch(r"(?:тише|(?:дыбыс(?:ты)?|дауыс(?:ты)?)\s+азайт)(?:\s+(?:на\s+)?(\d+)\s*%?)?", command, _FLAGS)
+    match = re.fullmatch(
+        rf"(?:{volume_noun}\s+(?:азайт(?:шы)?|төмендет|бәсеңдет|ақырындат|ақырын(?:ырақ)?(?:\s+қыл)?)|"
+        rf"(?:азайт|төмендет|бәсеңдет)\s+{volume_noun}|тише|сделай\s+тише|убавь\s+(?:звук|громкость))"
+        + amount, volume_command, _FLAGS)
+    if not match:
+        match = re.fullmatch(rf"{volume_noun}\s+(\d+)\s*(?:%|пайыз)?\s*[-–]?(?:ға|қа)\s+(?:азайт|төмендет|бәсеңдет)", volume_command, _FLAGS)
     if match:
         level = max(0, volume - int(match.group(1) or 10))
         return _result("music_control", f"Дыбыс деңгейі: {level}%.", action="volume", volume=level)

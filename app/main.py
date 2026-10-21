@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
+from pydantic import StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from .browser import BrowserError, BrowserService
@@ -38,6 +39,16 @@ class CommandInput(BaseModel):
 
 class EntryInput(BaseModel):
     content: str = Field(min_length=1, max_length=10000)
+
+
+class WeeklyTaskInput(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    weekdays: list[StrictInt] = Field(min_length=1, max_length=7)
+
+
+class WeeklyTaskCompletionInput(BaseModel):
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    completed: bool = Field(strict=True)
 
 
 class ReminderInput(BaseModel):
@@ -250,6 +261,40 @@ def create_app(data_dir: Path | None = None, browser=None, music=None, assistant
         if not request.app.state.store.delete_entry(entry_id):
             raise HTTPException(404, "Жазба табылмады.")
         return {"ok": True}
+
+    @application.get("/api/tasks")
+    async def weekly_tasks(request: Request, week: str = Query(pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        return request.app.state.store.weekly_tasks(week)
+
+    @application.post("/api/tasks", status_code=201)
+    async def add_weekly_task(body: WeeklyTaskInput, request: Request):
+        return request.app.state.store.add_weekly_task(body.title, body.weekdays)
+
+    @application.put("/api/tasks/{task_id}")
+    async def update_weekly_task(task_id: int, body: WeeklyTaskInput, request: Request):
+        if task_id < 1:
+            raise HTTPException(422, "Тапсырма нөмірі дұрыс емес.")
+        try:
+            return request.app.state.store.update_weekly_task(task_id, body.title, body.weekdays)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @application.delete("/api/tasks/{task_id}")
+    async def delete_weekly_task(task_id: int, request: Request):
+        if task_id < 1:
+            raise HTTPException(422, "Тапсырма нөмірі дұрыс емес.")
+        if not request.app.state.store.delete_weekly_task(task_id):
+            raise HTTPException(404, "Тапсырма табылмады.")
+        return {"ok": True}
+
+    @application.put("/api/tasks/{task_id}/completion")
+    async def set_weekly_task_completion(task_id: int, body: WeeklyTaskCompletionInput, request: Request):
+        if task_id < 1:
+            raise HTTPException(422, "Тапсырма нөмірі дұрыс емес.")
+        try:
+            return request.app.state.store.set_weekly_task_completion(task_id, body.date, body.completed)
+        except KeyError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @application.get("/api/reminders")
     async def reminders(request: Request):

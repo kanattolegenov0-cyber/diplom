@@ -1,5 +1,5 @@
 """Small local SQLite store; diary content never leaves this database."""
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import math
 import re
@@ -26,6 +26,19 @@ class Store:
                 CREATE TABLE IF NOT EXISTS reminders (
                     id INTEGER PRIMARY KEY, title TEXT NOT NULL, due_at TEXT NOT NULL,
                     completed INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS weekly_tasks (
+                    id INTEGER PRIMARY KEY,
+                    title TEXT NOT NULL CHECK(length(title) BETWEEN 1 AND 200),
+                    weekdays INTEGER NOT NULL CHECK(weekdays BETWEEN 1 AND 127),
+                    created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS weekly_task_completions (
+                    task_id INTEGER NOT NULL,
+                    completed_date TEXT NOT NULL CHECK(length(completed_date) = 10),
+                    completed_at TEXT NOT NULL,
+                    PRIMARY KEY(task_id, completed_date),
+                    FOREIGN KEY(task_id) REFERENCES weekly_tasks(id) ON DELETE CASCADE
                 );
                 CREATE TABLE IF NOT EXISTS tracks (
                     video_id TEXT PRIMARY KEY NOT NULL
@@ -113,6 +126,104 @@ class Store:
     def complete_reminder(self, reminder_id: int) -> bool:
         with self.connect() as connection:
             return connection.execute("UPDATE reminders SET completed=1 WHERE id=?", (reminder_id,)).rowcount > 0
+
+    @staticmethod
+    def _weekdays_mask(weekdays) -> int:
+        if (not isinstance(weekdays, (list, tuple)) or not 1 <= len(weekdays) <= 7
+                or any(type(day) is not int or not 1 <= day <= 7 for day in weekdays)
+                or len(set(weekdays)) != len(weekdays)):
+            raise ValueError("Апта күндерін қайталамай, 1-ден 7-ге дейін таңдаңыз.")
+        return sum(1 << (day - 1) for day in weekdays)
+
+    @staticmethod
+    def _task(row, completions: set[str]) -> dict:
+        mask = row["weekdays"]
+        weekdays = [day for day in range(1, 8) if mask & (1 << (day - 1))]
+        return {"id": row["id"], "title": row["title"],
+                "weekdays": weekdays,
+                "completed_dates": sorted(day for day in completions
+                                           if date.fromisoformat(day).isoweekday() in weekdays)}
+
+    def weekly_tasks(self, week: str) -> dict:
+        try:
+            start = date.fromisoformat(week)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Апта күні YYYY-MM-DD пішімінде болуы керек.") from exc
+        if start.isoformat() != week:
+            raise ValueError("Апта күні YYYY-MM-DD пішімінде болуы керек.")
+        start -= timedelta(days=start.weekday())
+        end = start + timedelta(days=6)
+        start_text, end_text = start.isoformat(), end.isoformat()
+        with self.connect() as connection:
+            tasks = connection.execute("SELECT * FROM weekly_tasks ORDER BY id").fetchall()
+            completions = connection.execute(
+                "SELECT task_id, completed_date FROM weekly_task_completions "
+                "WHERE completed_date BETWEEN ? AND ?", (start_text, end_text)
+            ).fetchall()
+        by_task: dict[int, set[str]] = {}
+        for entry in completions:
+            by_task.setdefault(entry["task_id"], set()).add(entry["completed_date"])
+        items = [self._task(row, by_task.get(row["id"], set())) for row in tasks]
+        planned = sum(len(item["weekdays"]) for item in items)
+        completed = sum(len(item["completed_dates"]) for item in items)
+        return {"week_start": start_text, "week_end": end_text,
+                "tasks": items, "planned": planned, "completed": completed}
+
+    def add_weekly_task(self, title: str, weekdays) -> dict:
+        title = title.strip() if isinstance(title, str) else ""
+        if not 1 <= len(title) <= 200:
+            raise ValueError("Тапсырма атауы 1–200 таңба болуы керек.")
+        mask = self._weekdays_mask(weekdays)
+        with self.connect() as connection:
+            if connection.execute("SELECT COUNT(*) FROM weekly_tasks").fetchone()[0] >= 100:
+                raise ValueError("100 рутиналық тапсырма шегіне жеттіңіз.")
+            cursor = connection.execute(
+                "INSERT INTO weekly_tasks (title, weekdays, created_at) VALUES (?, ?, ?)",
+                (title, mask, timestamp()))
+            row = connection.execute("SELECT * FROM weekly_tasks WHERE id=?", (cursor.lastrowid,)).fetchone()
+            return self._task(row, set())
+
+    def update_weekly_task(self, task_id: int, title: str, weekdays) -> dict:
+        title = title.strip() if isinstance(title, str) else ""
+        if not 1 <= len(title) <= 200:
+            raise ValueError("Тапсырма атауы 1–200 таңба болуы керек.")
+        mask = self._weekdays_mask(weekdays)
+        with self.connect() as connection:
+            if connection.execute("UPDATE weekly_tasks SET title=?, weekdays=? WHERE id=?",
+                                  (title, mask, task_id)).rowcount == 0:
+                raise KeyError("Тапсырма табылмады.")
+            row = connection.execute("SELECT * FROM weekly_tasks WHERE id=?", (task_id,)).fetchone()
+            return self._task(row, set())
+
+    def delete_weekly_task(self, task_id: int) -> bool:
+        with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM weekly_task_completions WHERE task_id=?", (task_id,))
+            return connection.execute("DELETE FROM weekly_tasks WHERE id=?", (task_id,)).rowcount > 0
+
+    def set_weekly_task_completion(self, task_id: int, completed_date: str, completed: bool) -> dict:
+        try:
+            day = date.fromisoformat(completed_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Күн YYYY-MM-DD пішімінде болуы керек.") from exc
+        if day.isoformat() != completed_date or type(completed) is not bool:
+            raise ValueError("Орындалу күні немесе белгісі дұрыс емес.")
+        with self.connect() as connection:
+            row = connection.execute("SELECT * FROM weekly_tasks WHERE id=?", (task_id,)).fetchone()
+            if row is None:
+                raise KeyError("Тапсырма табылмады.")
+            if not row["weekdays"] & (1 << (day.weekday())):
+                raise ValueError("Бұл тапсырма таңдалған апта күніне жоспарланбаған.")
+            if completed:
+                connection.execute("""
+                    INSERT INTO weekly_task_completions (task_id, completed_date, completed_at)
+                    VALUES (?, ?, ?) ON CONFLICT(task_id, completed_date)
+                    DO UPDATE SET completed_at=excluded.completed_at
+                """, (task_id, completed_date, timestamp()))
+            else:
+                connection.execute("DELETE FROM weekly_task_completions WHERE task_id=? AND completed_date=?",
+                                   (task_id, completed_date))
+        return {"task_id": task_id, "date": completed_date, "completed": completed}
 
     @staticmethod
     def _track(row: sqlite3.Row | None) -> dict | None:

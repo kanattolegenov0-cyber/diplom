@@ -26,7 +26,8 @@
     recognition: null, listening: false, nativeListening: false,
     player: null, playerReady: false, currentTrack: null, playing: false,
     youtubePromise: null, commandBusy: false, browserBusy: false,
-    entries: [], reminders: [], notifiedReminders: new Set(),
+    entries: [], reminders: [], notifiedReminders: new Set(), weeklyTasks: [],
+    taskWeekStart: null, taskLoadGeneration: 0, editingTaskId: null,
     history: [], lastEngine: null, settingsPromise: null,
     settings: { llm_enabled: true, llm_provider: 'ollama', ollama_model: 'qwen2.5:3b', llm_model: 'gpt-4.1-mini', llm_configured: false, tts_provider: 'edge', tts_voice: 'kk-KZ-DauletNeural', elevenlabs_configured: false, elevenlabs_voice_id: '', elevenlabs_model: 'eleven_v3', speech_style: 'serious', speech_rate: -8, speech_pitch: -8, wake_enabled: true, wake_language: 'kk-KZ' },
     speechGeneration: 0, speechAbort: null, speechAudio: null, speechUrl: null,
@@ -41,7 +42,7 @@
     voiceCorrecting: false, voiceReview: false, voiceGeneration: 0, voiceOriginal: '',
     ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
   };
-  const viewNames = { home: 'Басты бет', music: 'Музыка', anime: 'Аниме', browser: 'Браузер', diary: 'Күнделік', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
+  const viewNames = { home: 'Басты бет', music: 'Музыка', anime: 'Аниме', browser: 'Браузер', diary: 'Күнделік', tasks: 'Тапсырмалар', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
   const months = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз', 'қыркүйек', 'қазан', 'қараша', 'желтоқсан'];
   function syncSidebar() { $('#sidebar').inert = mobileMedia.matches && !$('#sidebar').classList.contains('open'); }
@@ -1342,6 +1343,133 @@
     renderReminders();
   }
 
+  const taskDayNames = ['Дс', 'Сс', 'Ср', 'Бс', 'Жм', 'Сб', 'Жс'];
+  function localISODate(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  }
+  function mondayOf(date) {
+    const monday = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+    return localISODate(monday);
+  }
+  function taskWeekDates() {
+    const [year, month, day] = state.taskWeekStart.split('-').map(Number);
+    const first = new Date(year, month - 1, day);
+    return Array.from({ length: 7 }, (_, index) => {
+      const date = new Date(first.getFullYear(), first.getMonth(), first.getDate() + index);
+      return { date, iso: localISODate(date) };
+    });
+  }
+  function renderWeeklyTasks() {
+    const grid = $('#weekly-task-grid'); grid.replaceChildren();
+    const days = taskWeekDates();
+    const completed = state.weeklyTasks.reduce((sum, task) => sum + task.completed_dates.length, 0);
+    const planned = state.weeklyTasks.reduce((sum, task) => sum + task.weekdays.length, 0);
+    const end = days[6].date;
+    const start = days[0].date;
+    const sameMonth = start.getMonth() === end.getMonth();
+    const label = sameMonth
+      ? `${start.getDate()}–${end.getDate()} ${months[end.getMonth()]} ${end.getFullYear()}`
+      : `${start.getDate()} ${months[start.getMonth()]} – ${end.getDate()} ${months[end.getMonth()]} ${end.getFullYear()}`;
+    $('#tasks-week-label').textContent = label;
+    $('#tasks-week-progress').textContent = `${completed} / ${planned}`;
+    const progress = $('#tasks-progress-bar'); progress.max = Math.max(planned, 1); progress.value = completed;
+    $('#tasks-week-message').textContent = planned
+      ? (completed === planned ? 'Осы аптадағы барлық жоспар орындалды!' : `Апталық жоспардың ${Math.round(completed * 100 / planned)}%-ы орындалды.`)
+      : 'Әзірге жоспарланған іс жоқ.';
+    const corner = document.createElement('div'); corner.className = 'weekly-grid-heading task-name-heading';
+    corner.textContent = 'ҚАЙТАЛАНАТЫН ІС'; grid.append(corner);
+    for (const { date, iso } of days) {
+      const header = document.createElement('div'); header.className = 'weekly-grid-heading task-day-heading';
+      if (iso === localISODate(new Date())) header.classList.add('task-today');
+      const name = document.createElement('strong'); name.textContent = taskDayNames[(date.getDay() + 6) % 7];
+      const count = state.weeklyTasks.filter((task) => task.weekdays.includes((date.getDay() + 6) % 7 + 1));
+      const checked = count.filter((task) => task.completed_dates.includes(iso)).length;
+      const number = document.createElement('small'); number.textContent = `${date.getDate()} · ${checked}/${count.length}`;
+      header.append(name, number); grid.append(header);
+    }
+    const actionsHeading = document.createElement('div'); actionsHeading.className = 'weekly-grid-heading';
+    actionsHeading.textContent = 'ӨЗГЕРТУ'; grid.append(actionsHeading);
+    if (!state.weeklyTasks.length) {
+      const empty = document.createElement('div'); empty.className = 'empty-state weekly-task-empty';
+      empty.style.gridColumn = '1 / -1';
+      const title = document.createElement('h3'); title.textContent = 'Апталық жоспарыңыз әлі бос';
+      const hint = document.createElement('p'); hint.textContent = 'Жаттығу, кітап оқу немесе басқа дағдыларды қосып бастаңыз.';
+      empty.append(title, hint); grid.append(empty); return;
+    }
+    for (const task of state.weeklyTasks) {
+      const title = document.createElement('div'); title.className = 'weekly-task-name';
+      const strong = document.createElement('strong'); strong.textContent = task.title;
+      const schedule = document.createElement('small'); schedule.textContent = task.weekdays.map((day) => taskDayNames[day - 1]).join(' · ');
+      title.append(strong, schedule); grid.append(title);
+      for (const { date, iso } of days) {
+        const cell = document.createElement('div'); cell.className = 'weekly-task-cell';
+        const weekday = (date.getDay() + 6) % 7 + 1;
+        if (task.weekdays.includes(weekday)) {
+          const check = document.createElement('input'); check.type = 'checkbox';
+          check.className = 'task-completion-check'; check.checked = task.completed_dates.includes(iso);
+          check.setAttribute('aria-label', `${task.title}: ${taskDayNames[weekday - 1]} ${date.getDate()} ${check.checked ? 'орындалды' : 'орындалды деп белгілеу'}`);
+          check.addEventListener('change', async () => {
+            check.disabled = true;
+            try {
+              await api(`/api/tasks/${task.id}/completion`, {
+                method: 'PUT', body: JSON.stringify({ date: iso, completed: check.checked }),
+              });
+              await loadWeeklyTasks();
+            } catch (error) { check.checked = !check.checked; check.disabled = false; toast(error.message, true); }
+          });
+          cell.append(check);
+        } else {
+          const dash = document.createElement('span'); dash.className = 'task-not-scheduled'; dash.textContent = '·';
+          dash.setAttribute('aria-label', 'Жоспарланбаған'); cell.append(dash);
+        }
+        grid.append(cell);
+      }
+      const actions = document.createElement('div'); actions.className = 'weekly-task-row-actions';
+      const edit = document.createElement('button'); edit.type = 'button'; edit.className = 'icon-button';
+      edit.setAttribute('aria-label', `${task.title} тапсырмасын өзгерту`); edit.title = 'Өзгерту'; edit.textContent = '✎';
+      edit.addEventListener('click', () => editWeeklyTask(task));
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'icon-button';
+      remove.setAttribute('aria-label', `${task.title} тапсырмасын жою`); remove.title = 'Жою'; remove.append(icons('trash'));
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`«${task.title}» тапсырмасын және оның белгілерін жоясыз ба?`)) return;
+        remove.disabled = true;
+        try { await api(`/api/tasks/${task.id}`, { method: 'DELETE' }); await loadWeeklyTasks(); }
+        catch (error) { toast(error.message, true); remove.disabled = false; }
+      });
+      actions.append(edit, remove); grid.append(actions);
+    }
+  }
+  async function loadWeeklyTasks() {
+    if (!state.taskWeekStart) state.taskWeekStart = mondayOf(new Date());
+    const generation = ++state.taskLoadGeneration;
+    $('#tasks-notice').textContent = 'Апталық жоспарыңыз жүктелуде…';
+    const result = await api(`/api/tasks?week=${encodeURIComponent(state.taskWeekStart)}`);
+    if (generation !== state.taskLoadGeneration) return;
+    state.weeklyTasks = Array.isArray(result.tasks) ? result.tasks : [];
+    renderWeeklyTasks();
+    $('#tasks-notice').textContent = 'Тапсырмалар осы компьютерде сақталады. Белгілер әр апта мен әр күнге бөлек қойылады.';
+  }
+  function editWeeklyTask(task) {
+    state.editingTaskId = task.id;
+    $('#weekly-task-title').value = task.title;
+    $$('input[name="weekdays"]').forEach((input) => { input.checked = task.weekdays.includes(Number(input.value)); });
+    $('#weekly-task-submit').replaceChildren(icons('check'), document.createTextNode('Өзгерісті сақтау'));
+    $('#weekly-task-cancel').hidden = false;
+    $('#weekly-task-title').focus();
+  }
+  function changeTaskWeek(days) {
+    const [year, month, day] = state.taskWeekStart.split('-').map(Number);
+    state.taskWeekStart = localISODate(new Date(year, month - 1, day + days));
+    loadWeeklyTasks().catch((error) => toast(error.message, true));
+  }
+  function resetWeeklyTaskForm() {
+    state.editingTaskId = null;
+    $('#weekly-task-form').reset();
+    $('#weekly-task-submit').replaceChildren(icons('plus'), document.createTextNode('Іс қосу'));
+    $('#weekly-task-cancel').hidden = true;
+  }
+
   async function executeIntent(intent, payload = {}, reply = 'Пәрмен орындалды.', inPlan = false) {
     const serverIntents = ['diary_add', 'diary_list', 'reminder_add', 'reminders_list', 'time'];
     if (inPlan && serverIntents.includes(intent)) {
@@ -1426,7 +1554,10 @@
     finally { if (button) button.disabled = false; }
   }
 
-  $$('.nav-item').forEach((button) => button.addEventListener('click', () => showView(button.dataset.view)));
+  $$('.nav-item').forEach((button) => button.addEventListener('click', () => {
+    showView(button.dataset.view);
+    if (button.dataset.view === 'tasks') loadWeeklyTasks().catch((error) => toast(error.message, true));
+  }));
   $('.brand').addEventListener('click', (event) => { event.preventDefault(); showView('home'); });
   window.addEventListener('hashchange', () => showView(window.location.hash.slice(1), false));
   $('#menu-toggle').addEventListener('click', () => {
@@ -1532,6 +1663,25 @@
       $('#reminder-title').value = ''; await loadReminders(); toast('Еске салғыш қосылды. Терезені ашық қалдырыңыз.');
     });
   });
+  $('#weekly-task-form').addEventListener('submit', (event) => {
+    event.preventDefault(); withFormBusy(event.currentTarget, async () => {
+      const title = $('#weekly-task-title').value.trim();
+      const weekdays = $$('input[name="weekdays"]:checked').map((input) => Number(input.value));
+      if (!title) throw new Error('Тапсырма атауын жазыңыз.');
+      if (!weekdays.length) throw new Error('Кемінде бір апта күнін таңдаңыз.');
+      const editingId = state.editingTaskId;
+      const url = editingId ? `/api/tasks/${editingId}` : '/api/tasks';
+      await api(url, { method: editingId ? 'PUT' : 'POST', body: JSON.stringify({ title, weekdays }) });
+      resetWeeklyTaskForm(); await loadWeeklyTasks();
+      toast(editingId ? 'Апталық тапсырма жаңартылды.' : 'Апталық тапсырма қосылды.');
+    });
+  });
+  $('#weekly-task-cancel').addEventListener('click', resetWeeklyTaskForm);
+  $('#tasks-week-prev').addEventListener('click', () => changeTaskWeek(-7));
+  $('#tasks-week-next').addEventListener('click', () => changeTaskWeek(7));
+  $('#tasks-week-today').addEventListener('click', () => {
+    state.taskWeekStart = mondayOf(new Date()); loadWeeklyTasks().catch((error) => toast(error.message, true));
+  });
 
   const today = new Date();
   $('#today').dateTime = today.toISOString();
@@ -1542,6 +1692,8 @@
   state.settingsPromise.catch(() => { $('#settings-status').textContent = 'Баптаулар жүктелмеді'; });
   checkHealth();
   loadPlaylist().catch(() => { $('#playlist-notice').textContent = 'Сақталған плейлистті жүктеу мүмкін болмады. Жаңарту батырмасын басып көріңіз.'; });
+  state.taskWeekStart = mondayOf(today);
+  loadWeeklyTasks().catch((error) => { $('#tasks-notice').textContent = error.message; });
   setInterval(sampleListening, 1000);
   Promise.allSettled([loadDiary(), loadReminders()]).then((results) => {
     if (results.some((result) => result.status === 'rejected')) toast('Жазбаларды жүктеу мүмкін болмады. Бағдарламамен байланысты тексеріңіз.', true);

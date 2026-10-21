@@ -25,7 +25,7 @@ class TranscriptionService:
         self._loaded = None
 
     def path(self):
-        return self.directory / ("whisper-" + self.preferences.get("stt_model", "medium"))
+        return self.directory / ("whisper-" + self.preferences.get("stt_model", "small"))
 
     def status(self):
         installed = importlib.util.find_spec("faster_whisper") is not None
@@ -33,7 +33,7 @@ class TranscriptionService:
         ready = installed and all((path / name).is_file() for name in
                                   ("model.bin", "config.json", "tokenizer.json"))
         provider = self.preferences.get("stt_provider", "auto")
-        return {"provider": provider, "model": self.preferences.get("stt_model", "medium"),
+        return {"provider": provider, "model": self.preferences.get("stt_model", "small"),
                 "installed": installed, "model_ready": ready,
                 "active_provider": "whisper" if provider == "whisper" or (provider == "auto" and ready) else "google"}
 
@@ -63,7 +63,7 @@ class TranscriptionService:
                     self._model = None
                     self._loaded = None
                     self._model = WhisperModel(str(path), device="cpu", compute_type="int8",
-                                               cpu_threads=4, local_files_only=True)
+                                               cpu_threads=2, local_files_only=True)
                     self._loaded = path
                 self._check_cancel(stop_event)
                 segments, _ = self._model.transcribe(
@@ -85,7 +85,7 @@ class TranscriptionService:
             except voice.VoiceError:
                 raise
             except Exception as exc:
-                raise voice.VoiceError("Whisper іске қосылмады. setup-whisper.bat арқылы модельді тексеріңіз; бос жад жеткілікті болуы керек.") from exc
+                raise voice.VoiceError("Whisper жадыға сыймады немесе іске қосылмады. Баптаулардан small моделін таңдаңыз да setup-whisper.bat small командасымен орнатыңыз, кейін Аянды қайта іске қосыңыз.") from exc
 
     def transcribe_wake(self, pcm, language, fallback, *, stop_event=None):
         # Background audio stays local. Google never receives wake recordings.

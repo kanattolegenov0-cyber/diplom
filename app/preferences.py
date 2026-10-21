@@ -29,7 +29,7 @@ DEFAULTS = {
     "wake_enabled": True,
     "wake_language": "kk-KZ",
     "stt_provider": "auto",
-    "stt_model": "medium",
+    "stt_model": "small",
     "stt_review": True,
     "stt_ollama_correction": False,
     "stt_dictionary": "",

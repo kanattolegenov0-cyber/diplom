@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidateSet("small", "medium", "large-v3")][string]$Model = "medium")
+param([ValidateSet("small", "medium", "large-v3")][string]$Model = "small")
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $ProjectRoot = Split-Path -Parent $PSScriptRoot

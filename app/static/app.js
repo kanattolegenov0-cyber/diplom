@@ -539,7 +539,7 @@
     $('#wake-enabled').checked = Boolean(state.settings.wake_enabled);
     $('#wake-language').value = state.settings.wake_language || 'kk-KZ';
     $('#stt-provider').value = state.settings.stt_provider || 'auto';
-    $('#stt-model').value = state.settings.stt_model || 'medium';
+    $('#stt-model').value = state.settings.stt_model || 'small';
     $('#stt-review').checked = state.settings.stt_review !== false;
     $('#stt-ollama-correction').checked = Boolean(state.settings.stt_ollama_correction);
     $('#stt-dictionary').value = state.settings.stt_dictionary || '';

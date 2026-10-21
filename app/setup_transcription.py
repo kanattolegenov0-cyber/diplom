@@ -10,9 +10,9 @@ from .transcription import MODELS
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=sorted(MODELS), default="medium")
+    parser.add_argument("--model", choices=sorted(MODELS), default="small")
     args = parser.parse_args()
-    from faster_whisper import WhisperModel, download_model
+    from faster_whisper import download_model
     directory = Path(os.environ.get("AYAN_DATA_DIR", "data"))
     models = directory / "models"
     models.mkdir(parents=True, exist_ok=True)
@@ -22,14 +22,16 @@ def main():
             staging = Path(temporary) / "model"
             # Official faster-whisper model mapping and HTTPS/Hugging Face download.
             download_model(args.model, output_dir=str(staging))
-            model = WhisperModel(str(staging), device="cpu", compute_type="int8", local_files_only=True)
-            del model  # Release file handles before rename on Windows.
+            required = ("model.bin", "config.json", "tokenizer.json")
+            if not all((staging / name).is_file() for name in required):
+                raise RuntimeError("Whisper model download is incomplete; required files are missing.")
             staging.rename(target)
     else:
-        model = WhisperModel(str(target), device="cpu", compute_type="int8", local_files_only=True)
-        del model
+        required = ("model.bin", "config.json", "tokenizer.json")
+        if not all((target / name).is_file() for name in required):
+            raise RuntimeError("Installed Whisper model is incomplete; remove its model folder and retry.")
     Preferences(directory).update({"stt_provider": "auto", "stt_model": args.model})
-    print(f"Whisper {args.model} is installed and validated. Restart Ayan.")
+    print(f"Whisper {args.model} files are installed. Model memory will be used only when speech recognition starts. Restart Ayan.")
 
 
 if __name__ == "__main__":

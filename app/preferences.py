@@ -30,7 +30,7 @@ DEFAULTS = {
     "wake_language": "kk-KZ",
     "stt_provider": "auto",
     "stt_model": "small",
-    "stt_review": True,
+    "stt_review": False,
     "stt_ollama_correction": False,
     "stt_dictionary": "",
 }

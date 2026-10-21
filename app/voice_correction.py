@@ -1,4 +1,4 @@
-"""User-authored replacements and optional, review-only local AI suggestions."""
+"""User-authored replacements and local AI corrections with optional review."""
 import asyncio
 import json
 import re
@@ -46,7 +46,7 @@ class CorrectionService:
         if len(corrected) > 4000:
             corrected = original
         result = {"original": original, "text": corrected, "ai_changed": False,
-                  "review": self.preferences.get("stt_review", True), "warning": ""}
+                  "review": self.preferences.get("stt_review", False), "warning": ""}
         if not self.preferences.get("stt_ollama_correction", False):
             return result
         model = self.preferences.get("ollama_model")
@@ -83,8 +83,8 @@ class CorrectionService:
                 raise ValueError("Invalid correction")
             candidate = candidate.strip()
             if candidate != corrected:
-                result.update(text=candidate, ai_changed=True, review=True)
+                result.update(text=candidate, ai_changed=True)
         except (httpx.HTTPError, OSError, ValueError, TypeError, KeyError, AttributeError, asyncio.TimeoutError):
-            # Do not lose recognized text or execute an unchecked AI response.
-            result.update(warning="Ollama түзетуі қолжетімсіз. Танылған мәтінді тексеріңіз.", review=True)
+            # Keep the original/dictionary text and the user's review preference.
+            result.update(warning="Ollama түзетуі қолжетімсіз. Бастапқы танылған мәтін қолданылады.")
         return result

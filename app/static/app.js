@@ -314,7 +314,7 @@
     await syncWakeActivity();
     let result;
     try { result = await post('/api/voice/correct', { text, language }, { timeout: 55000 }); }
-    catch { result = { text, review: true, warning: 'Түзету қолжетімсіз. Мәтінді қолмен тексеріңіз.' }; }
+    catch { result = { text, review: state.settings.stt_review === true, warning: 'Түзету қолжетімсіз. Бастапқы танылған мәтін қолданылады.' }; }
     if (generation !== state.voiceGeneration || state.closing) return;
     state.voiceCorrecting = false;
     $('#voice-use-original').disabled = false;
@@ -322,7 +322,7 @@
       result = { text: $('#command-input').value, review: true, warning: 'Сіз өңдеген мәтін сақталды. Тексеріп, орындаңыз.' };
     }
     $('#command-input').value = result.text ?? text;
-    if (result.review || result.ai_changed) {
+    if (result.review) {
       state.voiceReview = true;
       $('#voice-accept').disabled = false;
       $('#voice-review-status').textContent = result.warning || (result.ai_changed
@@ -330,7 +330,10 @@
         : 'Жоғарыдағы мәтінді тексеріңіз не өңдеңіз, содан кейін «Мәтінді орындау» басыңыз.');
       $('#command-input').focus();
       await syncWakeActivity();
-    } else await handleCommand(result.text || text);
+    } else {
+      if (result.warning) toast(result.warning);
+      await handleCommand(result.text || text);
+    }
   }
   async function checkRecognizer() {
     const output = $('#stt-status');
@@ -540,7 +543,7 @@
     $('#wake-language').value = state.settings.wake_language || 'kk-KZ';
     $('#stt-provider').value = state.settings.stt_provider || 'auto';
     $('#stt-model').value = state.settings.stt_model || 'small';
-    $('#stt-review').checked = state.settings.stt_review !== false;
+    $('#stt-review').checked = state.settings.stt_review === true;
     $('#stt-ollama-correction').checked = Boolean(state.settings.stt_ollama_correction);
     $('#stt-dictionary').value = state.settings.stt_dictionary || '';
     $('#llm-key-status').textContent = state.settings.llm_configured ? 'кілт сақталған' : 'қосылмаған';

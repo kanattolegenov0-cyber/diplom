@@ -39,7 +39,7 @@ def test_voice_correction_api_does_not_execute_commands(tmp_path):
         result = client.post('/api/voice/correct', json={'text': 'Күнделікке жат: бүгін жақсы күн'}).json()
         assert result['text'] == 'Күнделікке жаз: бүгін жақсы күн'
         assert result['original'] == 'Күнделікке жат: бүгін жақсы күн'
-        assert result['review'] is True
+        assert result['review'] is False
         assert client.get('/api/diary').json()['entries'] == []
         assert client.post('/api/voice/correct', json={'text': '  '}).status_code == 422
         assert client.post('/api/settings', json={'stt_model': '../bad'}).status_code == 422
@@ -53,9 +53,10 @@ def test_voice_correction_api_does_not_execute_commands(tmp_path):
     ({'text': ['invalid']}, 'Молдан азар қос', False, True),
     ({'text': 'x' * 4001}, 'Молдан азар қос', False, True),
 ])
-def test_ollama_suggestion_is_review_only_and_bounded(tmp_path, reply, expected, changed, warning):
+@pytest.mark.parametrize('review', [False, True])
+def test_ollama_correction_respects_review_setting_and_bounds(tmp_path, reply, expected, changed, warning, review):
     prefs = Preferences(tmp_path)
-    prefs.update({'stt_ollama_correction': True, 'stt_review': False})
+    prefs.update({'stt_ollama_correction': True, 'stt_review': review})
     calls = []
     def handler(request):
         assert request.url.host == '127.0.0.1'
@@ -70,7 +71,7 @@ def test_ollama_suggestion_is_review_only_and_bounded(tmp_path, reply, expected,
     result = asyncio.run(CorrectionService(prefs, transport=httpx.MockTransport(handler)).correct('Молдан азар қос', 'kk-KZ'))
     assert result['text'] == expected and result['ai_changed'] is changed
     assert bool(result['warning']) is warning
-    assert result['review'] is (changed or warning)
+    assert result['review'] is review
     assert calls == ['/api/tags', '/api/chat']
 
 
@@ -81,7 +82,18 @@ def test_remote_backed_ollama_is_not_sent_transcript(tmp_path):
         assert request.url.path == '/api/tags'
         return httpx.Response(200, json={'models': [{'name': prefs.get('ollama_model'), 'remote_host': 'cloud.example'}]})
     result = asyncio.run(CorrectionService(prefs, transport=httpx.MockTransport(handler)).correct('Мәтін', 'kk-KZ'))
-    assert result['text'] == 'Мәтін' and result['warning'] and result['review']
+    assert result['text'] == 'Мәтін' and result['warning']
+    assert result['review'] is False
+
+
+@pytest.mark.parametrize('review', [False, True])
+def test_review_preference_is_saved_and_reused(tmp_path, review):
+    with TestClient(create_app(tmp_path)) as client:
+        assert client.post('/api/settings', json={'stt_review': review}).status_code == 200
+    with TestClient(create_app(tmp_path)) as client:
+        assert client.get('/api/settings').json()['stt_review'] is review
+        result = client.post('/api/voice/correct', json={'text': 'Moldanazar қос'}).json()
+        assert result['review'] is review
 
 
 def test_missing_whisper_never_downloads_or_silently_uses_google(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Literal
 import asyncio
 import os
+import re
 import sys
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -25,6 +26,7 @@ from .wake_model import ModelError, ModelManager
 from . import voice
 from .transcription import TranscriptionService
 from .voice_correction import CorrectionService
+from .mobile_voice import ALLOWED_AUDIO_TYPES, MAX_UPLOAD_BYTES, transcribe_upload
 
 
 class CommandInput(BaseModel):
@@ -150,7 +152,13 @@ def create_app(data_dir: Path | None = None, music=None, assistant=None,
             await asyncio.to_thread(application.state.wake.close)
 
     application = FastAPI(title="AYAN — жеке көмекші", version="0.1.0", lifespan=lifespan)
-    application.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"])
+    allowed_hosts = ["localhost", "127.0.0.1", "[::1]", "testserver"]
+    public_host = os.environ.get("AYAN_PUBLIC_HOST", "").strip().lower()
+    if public_host:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,251}[a-z0-9]", public_host) or ".." in public_host:
+            raise ValueError("AYAN_PUBLIC_HOST тек домен атауы болуы керек.")
+        allowed_hosts.append(public_host)
+    application.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
     @application.middleware("http")
     async def local_requests(request: Request, call_next):
@@ -322,6 +330,25 @@ def create_app(data_dir: Path | None = None, music=None, assistant=None,
         except voice.VoiceError as exc:
             raise HTTPException(503, str(exc)) from exc
 
+    @application.post("/api/voice/upload")
+    async def voice_upload(request: Request, language: Literal["kk-KZ", "ru-RU"] = "kk-KZ"):
+        content_type = request.headers.get("content-type", "").split(";", 1)[0].lower().strip()
+        if content_type not in ALLOWED_AUDIO_TYPES:
+            raise HTTPException(415, "Қолдау көрсетілмейтін дыбыс пішімі.")
+        if request.headers.get("content-length", "").isdigit() and int(request.headers["content-length"]) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "Дауыс жазбасы тым үлкен.")
+        payload = bytearray()
+        async for chunk in request.stream():
+            payload.extend(chunk)
+            if len(payload) > MAX_UPLOAD_BYTES:
+                raise HTTPException(413, "Дауыс жазбасы тым үлкен.")
+        try:
+            text = await asyncio.to_thread(
+                transcribe_upload, bytes(payload), content_type, language, request.app.state.transcription)
+            return {"text": text}
+        except voice.VoiceError as exc:
+            raise HTTPException(503, str(exc)) from exc
+
     @application.get("/api/voice/status")
     async def voice_status():
         if os.environ.get("AYAN_DESKTOP_MODE") != "1":
@@ -384,6 +411,11 @@ def create_app(data_dir: Path | None = None, music=None, assistant=None,
 
     bundle_root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
     static = bundle_root / "app" / "static"
+
+    @application.get("/service-worker.js")
+    async def service_worker():
+        return FileResponse(static / "service-worker.js", media_type="application/javascript",
+                            headers={"Cache-Control": "no-cache"})
 
     @application.get("/")
     async def index():

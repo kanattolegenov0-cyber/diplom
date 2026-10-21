@@ -1,0 +1,7 @@
+{$AYAN_DOMAIN} {
+    encode zstd gzip
+    basic_auth {
+        ayan {$AYAN_PASSWORD_HASH}
+    }
+    reverse_proxy app:8000
+}

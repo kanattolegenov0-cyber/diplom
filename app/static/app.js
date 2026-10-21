@@ -41,9 +41,13 @@
     soundcloudPromise: null,
     voiceCorrecting: false, voiceReview: false, voiceGeneration: 0, voiceOriginal: '',
     ollamaStatus: null, ollamaChecking: false, ollamaCheckId: 0,
+    mobileStream: null, mobileRecorder: null, mobileChunks: [], mobileTimeout: null,
+    mobileStarting: false, mobileSending: false,
   };
   const viewNames = { home: 'Басты бет', music: 'Музыка', diary: 'Күнделік', tasks: 'Тапсырмалар', reminders: 'Еске салғыштар', settings: 'Баптаулар' };
   const mobileMedia = window.matchMedia('(max-width: 650px)');
+  const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
   const months = ['қаңтар', 'ақпан', 'наурыз', 'сәуір', 'мамыр', 'маусым', 'шілде', 'тамыз', 'қыркүйек', 'қазан', 'қараша', 'желтоқсан'];
   function syncSidebar() { $('#sidebar').inert = mobileMedia.matches && !$('#sidebar').classList.contains('open'); }
 
@@ -288,10 +292,13 @@
     }
     if (state.nativeListening || wakeCommandCapture()) return;
     const native = Boolean(state.health?.desktop_mode && state.health?.native_voice_available);
-    $('#mic-button').disabled = !native && !state.recognition;
+    const mobileCapture = isIOS() && Boolean(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+    $('#mic-button').disabled = !native && !state.recognition && !mobileCapture;
     if (state.voiceCorrecting || state.voiceReview) return;
     if (native) {
       $('#voice-notice').textContent = 'Микрофонды басып, «Айтыңыз» белгісін күтіңіз. Whisper орнатылса, дауыс компьютерде танылады; Google үшін интернет керек.';
+    } else if (mobileCapture) {
+      $('#voice-notice').textContent = 'iPhone микрофонын басып сөйлеңіз, тоқтату үшін қайта басыңыз. 20 секундтан кейін жазба автоматты тоқтайды.';
     } else if (state.recognition) {
       $('#voice-notice').textContent = 'Дауыс тану Chrome/Edge және HTTPS/localhost-та қолжетімді. Тек микрофонды басқан кезде тыңдаймын.';
     } else {
@@ -341,11 +348,58 @@
     output.textContent = 'Тексерілуде…';
     try {
       const result = await api('/api/voice/recognizer');
-      const context = state.health?.desktop_mode ? '' : 'Бұл — Windows тану баптауы. Браузер өз қызметін қолданады. ';
+      const context = state.health?.desktop_mode ? '' : isIOS()
+        ? 'iPhone жазбасы серверде өңделеді. ' : 'Бұл — Windows тану баптауы. Браузер өз қызметін қолданады. ';
       output.textContent = context + (result.active_provider === 'whisper'
-        ? (result.model_ready ? `Whisper ${result.model} орнатылған. Алғашқы тануда модель жадқа жүктеледі.` : `Whisper ${result.model} дайын емес. setup-whisper.bat арқылы орнатыңыз.`)
+        ? (result.model_ready ? `Whisper ${result.model} орнатылған. Алғашқы тануда модель жадқа жүктеледі.` : isIOS()
+          ? `Whisper ${result.model} серверде дайын емес. Google қызметін таңдаңыз.`
+          : `Whisper ${result.model} дайын емес. setup-whisper.bat арқылы орнатыңыз.`)
         : `Google қолданылады. ${result.model_ready ? 'Whisper де орнатылған.' : `Whisper ${result.model} әлі орнатылмаған.`}`);
     } catch (error) { output.textContent = error.message; }
+  }
+  async function mobileVoiceCapture() {
+    if (state.mobileRecorder?.state === 'recording') { state.mobileRecorder.stop(); return; }
+    if (state.mobileStarting || state.mobileSending) return;
+    state.mobileStarting = true;
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+      const mimeType = ['audio/mp4', 'audio/webm'].find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      state.mobileStream = stream; state.mobileRecorder = recorder; state.mobileChunks = [];
+      recorder.ondataavailable = (event) => { if (event.data?.size) state.mobileChunks.push(event.data); };
+      recorder.onerror = () => {
+        toast('iPhone микрофонынан жазу орындалмады. Қайта көріңіз.', true);
+        if (recorder.state === 'recording') recorder.stop();
+      };
+      recorder.onstop = async () => {
+        clearTimeout(state.mobileTimeout); state.mobileTimeout = null;
+        stream.getTracks().forEach((track) => track.stop());
+        state.mobileStream = null; state.mobileRecorder = null; setListening(false);
+        if (state.closing) return;
+        const blob = new Blob(state.mobileChunks, { type: recorder.mimeType || mimeType || 'audio/mp4' });
+        state.mobileChunks = [];
+        if (!blob.size) { toast('Дауыс жазылмады. Қайта айтып көріңіз.', true); return; }
+        state.mobileSending = true;
+        setAssistantState('Дауыс мәтінге айналдырылуда…');
+        try {
+          const result = await api(`/api/voice/upload?language=${encodeURIComponent(state.language)}`, {
+            method: 'POST', body: blob, headers: { 'Content-Type': blob.type }, timeout: 55000,
+          });
+          if (result.text) await handleVoiceText(result.text, state.language);
+          else toast('Дауыс анық естілмеді. Қайта айтыңыз.', true);
+        } catch (error) { toast(error.message, true); }
+        finally { state.mobileSending = false; setAssistantState('Пәрменіңізді күтіп тұрмын'); }
+      };
+      recorder.start(); state.mobileStarting = false; setListening(true);
+      state.mobileTimeout = setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, 20000);
+    } catch (error) {
+      stream?.getTracks().forEach((track) => track.stop());
+      const detail = error.name === 'NotAllowedError'
+        ? 'Safari баптауларынан Аян сайтына микрофон рұқсатын беріңіз.'
+        : 'iPhone микрофоны іске қосылмады. HTTPS байланысын және микрофон рұқсатын тексеріңіз.';
+      state.mobileStarting = false; toast(detail, true); setListening(false);
+    }
   }
   async function listen() {
     if (state.commandBusy || state.nativeListening) return;
@@ -420,6 +474,9 @@
       return;
     }
     stopSpeech();
+    if (isIOS() && navigator.mediaDevices?.getUserMedia && window.MediaRecorder) {
+      await mobileVoiceCapture(); return;
+    }
     if (!state.recognition) return;
     if (state.listening) { state.recognition.stop(); return; }
     try { state.recognition.lang = state.language; state.recognition.start(); }
@@ -433,6 +490,7 @@
       $('#connection-status').replaceChildren(document.createElement('span'), document.createTextNode('Жұмысқа дайын'));
       $('#sidebar-online').classList.add('connected');
       if (state.health.desktop_mode) $('#platform-label').textContent = 'Windows · Жеке көмекші';
+      else if (isIOS()) $('#platform-label').textContent = 'iPhone · Жеке көмекші';
     } catch {
       $('#connection-status').classList.add('offline');
       $('#connection-status').replaceChildren(document.createElement('span'), document.createTextNode('Байланыс жоқ'));
@@ -1506,6 +1564,12 @@
   });
 
   const today = new Date();
+  $('#ios-install-tip').hidden = !isIOS() || Boolean(navigator.standalone)
+    || window.matchMedia('(display-mode: standalone)').matches;
+  if (isIOS()) {
+    $('.wake-panel').hidden = true; $('.wake-settings').hidden = true;
+    $('#stt-help').textContent = 'iPhone микрофонының 20 секундқа дейінгі жазбасы серверде танылады. Серверде Whisper орнатылмаса, Автоматты режим Google сервисін қолданады. Whisper-ді телефонға орнату қажет емес.';
+  }
   $('#today').dateTime = today.toISOString();
   $('#today').textContent = dateLabel(today, false);
   showView(window.location.hash.slice(1) || 'home', false);
@@ -1526,9 +1590,13 @@
   setInterval(checkHealth, 60000);
   window.addEventListener('beforeunload', () => {
     state.closing = true; clearTimeout(state.wakePollTimer);
+    clearTimeout(state.mobileTimeout);
+    state.mobileRecorder?.stop();
+    state.mobileStream?.getTracks().forEach((track) => track.stop());
     if (state.listenSession) recordListen(state.listenSession, true, true);
     if (state.recognition && state.listening) state.recognition.abort();
     stopSpeech();
     $('#llm-api-key').value = ''; $('#elevenlabs-api-key').value = '';
   });
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/service-worker.js').catch(() => {});
 })();

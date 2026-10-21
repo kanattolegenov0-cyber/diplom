@@ -1,0 +1,48 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      AYAN_DATA_DIR: /data
+      AYAN_PUBLIC_HOST: ${AYAN_DOMAIN:?Set AYAN_DOMAIN in deploy/.env}
+      AYAN_OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      - ayan_data:/data
+    expose:
+      - "8000"
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+    volumes:
+      - ollama_data:/root/.ollama
+    expose:
+      - "11434"
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      AYAN_DOMAIN: ${AYAN_DOMAIN:?Set AYAN_DOMAIN in deploy/.env}
+      AYAN_PASSWORD_HASH: ${AYAN_PASSWORD_HASH:?Set AYAN_PASSWORD_HASH in deploy/.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  ayan_data:
+  ollama_data:
+  caddy_data:
+  caddy_config:

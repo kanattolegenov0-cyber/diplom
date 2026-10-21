@@ -2,10 +2,15 @@
 <html lang="kk">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#111413">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Аян">
   <meta name="description" content="Аян — музыка, күнделік, тапсырмалар және еске салғыштарға арналған жеке көмекші.">
   <title>AYAN — жеке көмекшіңіз</title>
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="apple-touch-icon" href="/static/icon-180.png">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
@@ -69,6 +74,7 @@
         <div class="command-examples"><span>Бастап көріңіз:</span><button data-command="Музыка қос: Moldanazar"><svg class="icon"><use href="#i-music"/></svg>Музыка қос</button><button data-command="Дауысын көтер"><svg class="icon"><use href="#i-volume"/></svg>Дауысты көтер</button><button data-command="Күнделікке жаз: Бүгінгі мақсатым — жаңа нәрсе үйрену"><svg class="icon"><use href="#i-book"/></svg>Ойымды сақта</button><button data-command="10 минуттан кейін су ішуді еске сал"><svg class="icon"><use href="#i-bell"/></svg>Еске сал</button></div>
         <div id="voice-review" class="voice-review" hidden aria-live="polite"><p id="voice-original"></p><p id="voice-review-status"></p><div class="voice-review-actions"><button type="button" class="secondary-button" id="voice-accept">Мәтінді орындау</button><button type="button" class="secondary-button" id="voice-use-original">Бастапқы мәтінді қою</button><button type="button" class="secondary-button" id="voice-cancel">Бас тарту</button></div></div>
         <p id="voice-notice" class="capability-note">Микрофонмен қолмен пәрмен беріңіз. «Аян» шақыруының күйі төменде көрсетіледі.</p>
+        <p id="ios-install-tip" class="capability-note" hidden>iPhone-ға орнату: Safari-дегі «Бөлісу» → «Басты экранға қосу» тармағын таңдаңыз.</p>
         <div class="wake-panel"><div class="wake-copy"><span class="wake-indicator" id="wake-indicator"></span><div><strong id="wake-status">«Аян» деп шақыру</strong><p id="wake-description">Тұрақты шақыру Windows қолданбасында қолжетімді.</p></div></div><div class="wake-controls"><button type="button" id="wake-install" class="secondary-button" hidden>Шақыру моделін орнату</button><button type="button" id="wake-toggle" class="secondary-button" disabled>Шақыруды қосу</button></div></div>
       </section>
 
@@ -110,7 +116,7 @@
               <fieldset class="settings-group"><legend>Дауысты тану және түзету</legend>
                 <div class="field"><label for="stt-provider">Сөзді тану қызметі</label><select id="stt-provider"><option value="auto">Автоматты · орнатылса Whisper, әйтпесе Google</option><option value="whisper">Whisper · компьютерде, тегін</option><option value="google">Google · интернет арқылы</option></select></div>
                 <div class="field"><label for="stt-model">Whisper моделі</label><select id="stt-model"><option value="small" selected>small · жады аз жұмсайды</option><option value="medium">medium · дәлірек болуы мүмкін</option><option value="large-v3">large-v3 · көбірек жад, баяуырақ</option></select><small>small аз жад жұмсайды. Үлкен модель анықтықты жақсартуы мүмкін, бірақ компьютерде баяу жұмыс істейді. Әр модель бөлек жүктеледі.</small></div>
-                <p class="settings-description">Аянды жабыңыз да, жоба қалтасындағы setup-whisper.bat файлын іске қосыңыз. Ол small моделін орнатады. Қайта ашқан соң күйін тексеріңіз. API кілті керек емес; орнатылған Whisper дыбысты компьютерде өңдейді. Бұл таңдау Windows қолданбасына арналған; браузер өз тану қызметін қолданады.</p>
+                <p class="settings-description" id="stt-help">Аянды жабыңыз да, жоба қалтасындағы setup-whisper.bat файлын іске қосыңыз. Ол small моделін орнатады. Қайта ашқан соң күйін тексеріңіз. API кілті керек емес; орнатылған Whisper дыбысты компьютерде өңдейді. Бұл таңдау Windows қолданбасына арналған; браузер өз тану қызметін қолданады.</p>
                 <button type="button" class="secondary-button" id="stt-check">Тану қызметін тексеру</button><p id="stt-status" role="status">Алдымен баптауларды сақтаңыз.</p>
                 <label class="checkbox-label"><input type="checkbox" id="stt-review"><span>Орындамас бұрын растау сұрау</span></label>
                 <label class="checkbox-label"><input type="checkbox" id="stt-ollama-correction"><span>Ollama арқылы мәтінді түзету</span></label>

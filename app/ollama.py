@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 
 import httpx
 
 
-OLLAMA_BASE_URL = "http://127.0.0.1:11434"
+OLLAMA_BASE_URL = os.environ.get("AYAN_OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
 MAX_RESPONSE_BYTES = 1024 * 1024
 _MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9][A-Za-z0-9._-]*)?")

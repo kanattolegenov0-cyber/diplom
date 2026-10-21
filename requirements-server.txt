@@ -1,0 +1,6 @@
+fastapi==0.143.1
+uvicorn==0.34.0
+yt-dlp==2026.8.19
+SpeechRecognition==3.17.0
+httpx==0.28.1
+edge-tts==7.3.1

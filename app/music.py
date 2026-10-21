@@ -50,7 +50,9 @@ class MusicService:
             if cached and time.monotonic() - cached[0] < 300:
                 return cached[1]
             try:
-                result = await asyncio.wait_for(asyncio.to_thread(self._soundcloud, query.strip()), 25)
+                result = await asyncio.wait_for(asyncio.to_thread(self._soundcloud, query.strip()), 32)
+            except MusicError:
+                raise
             except Exception as exc:
                 raise MusicError("SoundCloud іздеуі қолжетімсіз. Кейін қайталап көріңіз.") from exc
             self.cache[key] = (time.monotonic(), result)
@@ -60,8 +62,8 @@ class MusicService:
 
     def _soundcloud(self, query: str) -> dict:
         options = {"quiet": True, "no_warnings": True, "logger": QuietLogger(),
-                   "extract_flat": True, "skip_download": True, "socket_timeout": 8,
-                   "retries": 0, "extractor_retries": 0, "playlistend": 5}
+                   "extract_flat": True, "skip_download": True, "socket_timeout": 10,
+                   "retries": 2, "extractor_retries": 1, "playlistend": 5}
         with YoutubeDL(options) as service:
             info = service.extract_info(f"scsearch5:{query}", download=False)
         tracks = []
@@ -87,7 +89,9 @@ class MusicService:
             if cached and time.monotonic() - cached[0] < 300:
                 return cached[1]
             try:
-                result = await asyncio.wait_for(asyncio.to_thread(self._search, query), timeout=25)
+                result = await asyncio.wait_for(asyncio.to_thread(self._search, query), timeout=32)
+            except MusicError:
+                raise
             except (Exception, asyncio.TimeoutError) as exc:
                 raise MusicError("YouTube іздеуі қазір қолжетімсіз. Интернетті тексеріңіз немесе бейненің сілтемесін енгізіңіз.") from exc
             self.cache[query.casefold()] = (time.monotonic(), result)
@@ -97,8 +101,8 @@ class MusicService:
 
     def _search(self, query: str) -> dict:
         options = {"quiet": True, "no_warnings": True, "logger": QuietLogger(),
-                   "extract_flat": True, "skip_download": True, "socket_timeout": 8,
-                   "retries": 0, "extractor_retries": 0, "playlistend": 10,
+                   "extract_flat": True, "skip_download": True, "socket_timeout": 10,
+                   "retries": 2, "extractor_retries": 1, "playlistend": 10,
                    "nocheckcertificate": False}
         with YoutubeDL(options) as youtube:
             info = youtube.extract_info(f"ytsearch10:{query}", download=False)

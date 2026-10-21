@@ -846,20 +846,25 @@
     const results = $('#music-results');
     results.replaceChildren();
     let response;
+    let youtubeError = null;
     const source = $('#music-source').value;
     try {
-      try { response = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=${source === 'soundcloud' ? 'soundcloud' : 'youtube'}`, { timeout: 28000 }); }
+      try { response = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=${source === 'soundcloud' ? 'soundcloud' : 'youtube'}`, { timeout: 37000 }); }
       catch (error) {
         if (source !== 'auto') throw error;
+        youtubeError = error;
         $('#music-notice').textContent = 'YouTube іздеуі қолжетімсіз. SoundCloud-тан іздеп жатырмын…';
-        response = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=soundcloud`, { timeout: 28000 });
+        response = await api(`/api/music/search?q=${encodeURIComponent(query)}&source=soundcloud`, { timeout: 37000 });
       }
     }
     catch (error) {
-      $('#music-notice').textContent = error.message;
+      const detail = youtubeError
+        ? `YouTube: ${youtubeError.message} SoundCloud: ${error.message}`
+        : error.message;
+      $('#music-notice').textContent = `${detail} Әннің YouTube сілтемесін енгізуге немесе төмендегі іздеу сілтемелерін ашуға болады.`;
       appendSearchFallback(results, query);
-      if (strict) throw error;
-      return 'Іздеу қолжетімсіз. Музыка қызметтеріндегі іздеу сілтемелерін ашуға болады.';
+      if (strict) throw new Error(detail);
+      return 'Музыка іздеуі қазір қолжетімсіз. Әннің YouTube сілтемесін енгізіңіз немесе іздеу сілтемелерін ашыңыз.';
     }
     const tracks = Array.isArray(response.tracks) ? response.tracks : [];
     const validTracks = [];
